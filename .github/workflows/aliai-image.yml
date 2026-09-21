@@ -1,0 +1,116 @@
+name: Aliai image
+
+on:
+  push:
+    tags:
+      - 'aliai/v*'
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Branch, commit, or tag to build
+        required: true
+        default: main
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: aliai-image-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    name: Test source
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      GOWORK: 'off'
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.ref || github.ref }}
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: |
+            go.sum
+            relaykit/go.sum
+      - name: Prepare embedded frontend placeholder
+        run: mkdir -p web/dist && touch web/dist/index.html
+      - name: Vet and test
+        run: |
+          go vet ./...
+          (cd relaykit && go vet ./...)
+          make test
+
+  image:
+    name: Build and publish server image
+    needs: validate
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    outputs:
+      digest: ${{ steps.build.outputs.digest }}
+      image: ${{ steps.names.outputs.image }}
+      tag: ${{ steps.names.outputs.tag }}
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.ref || github.ref }}
+      - name: Resolve image name
+        id: names
+        shell: bash
+        run: |
+          set -euo pipefail
+          IMAGE="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/new-api"
+          if [[ "$GITHUB_EVENT_NAME" == workflow_dispatch ]]; then
+            RAW="manual-${GITHUB_SHA::12}"
+          else
+            RAW="$GITHUB_REF_NAME"
+          fi
+          TAG="$(printf '%s' "$RAW" | tr '/[:upper:]' '-[:lower:]' | sed -E 's/[^a-z0-9_.-]+/-/g; s/^[.-]+//; s/[.-]+$//')"
+          test -n "$TAG"
+          echo "image=$IMAGE" >> "$GITHUB_OUTPUT"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+      - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+      - uses: docker/login-action@c99871dec2022cc055c062a10cc1a1310835ceb4 # v4.3.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build and push linux/amd64 image
+        id: build
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          context: .
+          platforms: linux/amd64
+          push: true
+          tags: ${{ steps.names.outputs.image }}:${{ steps.names.outputs.tag }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          provenance: mode=max
+          sbom: true
+      - name: Make GHCR package public for passwordless production pulls
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          gh api --method PATCH /user/packages/container/new-api/visibility -f visibility=public
+      - name: Publish immutable image reference
+        shell: bash
+        run: |
+          printf '%s@%s\n' '${{ steps.names.outputs.image }}' '${{ steps.build.outputs.digest }}' | tee image-reference.txt
+          {
+            echo '## Image ready'
+            echo
+            echo '```text'
+            cat image-reference.txt
+            echo '```'
+            echo
+            echo 'Copy this immutable reference into `aliai-deploy/deploy/docker-compose.yml` through a pull request.'
+          } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: image-reference
+          path: image-reference.txt
+          retention-days: 30
