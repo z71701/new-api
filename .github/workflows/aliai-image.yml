@@ -90,12 +90,6 @@ jobs:
           cache-to: type=gha,mode=max
           provenance: mode=max
           sbom: true
-      - name: Make GHCR package public for passwordless production pulls
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        shell: bash
-        run: |
-          gh api --method PATCH /user/packages/container/new-api/visibility -f visibility=public
       - name: Publish immutable image reference
         shell: bash
         run: |
