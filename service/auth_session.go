@@ -11,9 +11,48 @@ import (
 	"github.com/QuantumNous/new-api/model"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
+	"gorm.io/gorm"
 )
 
 const RefreshCookieName = "new_api_refresh"
+
+const DesktopLoginSessionTTL = 7 * 24 * time.Hour
+
+type SessionDeviceMetadata struct {
+	DeviceID      string `json:"device_id,omitempty"`
+	DeviceName    string `json:"device_name,omitempty"`
+	Platform      string `json:"platform,omitempty"`
+	Arch          string `json:"arch,omitempty"`
+	ClientVersion string `json:"client_version,omitempty"`
+}
+
+type SessionPolicy struct {
+	ClientType string                `json:"client_type"`
+	TTLSeconds int64                 `json:"ttl_seconds"`
+	Device     SessionDeviceMetadata `json:"device,omitempty"`
+}
+
+func WebSessionPolicy() SessionPolicy {
+	return SessionPolicy{ClientType: model.UserSessionClientWeb, TTLSeconds: int64(LoginSessionTTL / time.Second)}
+}
+
+func NewDesktopSessionPolicy(device SessionDeviceMetadata) (SessionPolicy, error) {
+	policy := SessionPolicy{
+		ClientType: model.UserSessionClientDesktop,
+		TTLSeconds: int64(DesktopLoginSessionTTL / time.Second),
+		Device: SessionDeviceMetadata{
+			DeviceID:      strings.TrimSpace(device.DeviceID),
+			DeviceName:    strings.TrimSpace(device.DeviceName),
+			Platform:      strings.TrimSpace(device.Platform),
+			Arch:          strings.TrimSpace(device.Arch),
+			ClientVersion: strings.TrimSpace(device.ClientVersion),
+		},
+	}
+	if err := validateSessionPolicy(policy); err != nil {
+		return SessionPolicy{}, err
+	}
+	return policy, nil
+}
 
 // SessionHintCookieName is the script-readable companion to RefreshCookieName.
 // See writeSessionHintCookie for why it exists and what it is not.
@@ -31,14 +70,20 @@ var (
 )
 
 type LoginSessionView struct {
-	SID          string `json:"sid"`
-	Current      bool   `json:"current"`
-	LoginMethod  string `json:"login_method"`
-	IP           string `json:"ip"`
-	UserAgent    string `json:"user_agent"`
-	CreatedAt    int64  `json:"created_at"`
-	LastActiveAt int64  `json:"last_active_at"`
-	ExpiresAt    int64  `json:"expires_at"`
+	SID           string  `json:"sid"`
+	Current       bool    `json:"current"`
+	ClientType    string  `json:"client_type"`
+	LoginMethod   string  `json:"login_method"`
+	IP            string  `json:"ip"`
+	UserAgent     string  `json:"user_agent"`
+	DeviceID      *string `json:"device_id"`
+	DeviceName    *string `json:"device_name"`
+	Platform      *string `json:"platform"`
+	Arch          *string `json:"arch"`
+	ClientVersion *string `json:"client_version"`
+	CreatedAt     int64   `json:"created_at"`
+	LastActiveAt  int64   `json:"last_active_at"`
+	ExpiresAt     int64   `json:"expires_at"`
 }
 
 type AuthBundle struct {
@@ -50,17 +95,32 @@ type AuthBundle struct {
 }
 
 func CreateLoginSession(userID int, loginMethod, ip, userAgent string) (*AuthBundle, error) {
-	return createLoginSession(userID, 0, loginMethod, ip, userAgent)
+	return createLoginSession(userID, 0, loginMethod, ip, userAgent, WebSessionPolicy())
+}
+
+func CreateDesktopLoginSession(userID int, loginMethod, ip, userAgent string, device SessionDeviceMetadata) (*AuthBundle, error) {
+	return CreateDesktopLoginSessionAtAuthVersion(userID, 0, loginMethod, ip, userAgent, device)
+}
+
+func CreateDesktopLoginSessionAtAuthVersion(userID int, expectedAuthVersion int64, loginMethod, ip, userAgent string, device SessionDeviceMetadata) (*AuthBundle, error) {
+	policy, err := NewDesktopSessionPolicy(device)
+	if err != nil {
+		return nil, err
+	}
+	return createLoginSession(userID, expectedAuthVersion, loginMethod, ip, userAgent, policy)
 }
 
 func CreateLoginSessionAtAuthVersion(userID int, expectedAuthVersion int64, loginMethod, ip, userAgent string) (*AuthBundle, error) {
 	if expectedAuthVersion <= 0 {
 		return nil, ErrLoginSessionInvalid
 	}
-	return createLoginSession(userID, expectedAuthVersion, loginMethod, ip, userAgent)
+	return createLoginSession(userID, expectedAuthVersion, loginMethod, ip, userAgent, WebSessionPolicy())
 }
 
-func createLoginSession(userID int, expectedAuthVersion int64, loginMethod, ip, userAgent string) (*AuthBundle, error) {
+func createLoginSession(userID int, expectedAuthVersion int64, loginMethod, ip, userAgent string, policy SessionPolicy) (*AuthBundle, error) {
+	if err := validateSessionPolicy(policy); err != nil {
+		return nil, err
+	}
 	user, err := model.GetUserCache(userID)
 	if err != nil {
 		return nil, err
@@ -86,7 +146,7 @@ func createLoginSession(userID int, expectedAuthVersion int64, loginMethod, ip, 
 	if issuanceCount >= int64(common.UserSessionIssuanceLimit) {
 		return nil, model.ErrUserSessionIssuanceLimit
 	}
-	session, refreshSecret, err := newLoginSession(userID, user.AuthVersion, loginMethod, ip, userAgent)
+	session, refreshSecret, err := newLoginSession(userID, user.AuthVersion, loginMethod, ip, userAgent, policy)
 	if err != nil {
 		return nil, err
 	}
@@ -101,7 +161,10 @@ func createLoginSession(userID int, expectedAuthVersion int64, loginMethod, ip, 
 	return bundle, nil
 }
 
-func newLoginSession(userID int, authVersion int64, loginMethod, ip, userAgent string) (*model.UserSession, string, error) {
+func newLoginSession(userID int, authVersion int64, loginMethod, ip, userAgent string, policy SessionPolicy) (*model.UserSession, string, error) {
+	if err := validateSessionPolicy(policy); err != nil {
+		return nil, "", err
+	}
 	refreshSecret, err := common.GenerateRandomCharsKey(64)
 	if err != nil {
 		return nil, "", err
@@ -115,16 +178,50 @@ func newLoginSession(userID int, authVersion int64, loginMethod, ip, userAgent s
 		Status:          model.UserSessionStatusActive,
 		RefreshHash:     hashRefreshSecret(refreshSecret),
 		LoginMethod:     strings.TrimSpace(loginMethod),
+		ClientType:      policy.ClientType,
 		IP:              truncateAuthMetadata(ip, 64),
 		UserAgent:       truncateAuthMetadata(userAgent, 512),
+		DeviceID:        policy.Device.DeviceID,
+		DeviceName:      policy.Device.DeviceName,
+		Platform:        policy.Device.Platform,
+		Arch:            policy.Device.Arch,
+		ClientVersion:   policy.Device.ClientVersion,
 		CreatedAt:       now,
 		LastActiveAt:    now,
-		ExpiresAt:       time.Unix(now, 0).Add(LoginSessionTTL).Unix(),
+		ExpiresAt:       now + policy.TTLSeconds,
 	}
 	if session.LoginMethod == "" {
 		session.LoginMethod = "unknown"
 	}
 	return session, refreshSecret, nil
+}
+
+func validateSessionPolicy(policy SessionPolicy) error {
+	if policy.TTLSeconds <= 0 {
+		return ErrLoginSessionInvalid
+	}
+	switch policy.ClientType {
+	case model.UserSessionClientWeb:
+		if policy.TTLSeconds != int64(LoginSessionTTL/time.Second) || policy.Device != (SessionDeviceMetadata{}) {
+			return ErrLoginSessionInvalid
+		}
+	case model.UserSessionClientDesktop:
+		if policy.TTLSeconds != int64(DesktopLoginSessionTTL/time.Second) ||
+			policy.Device.DeviceID == "" || policy.Device.DeviceName == "" || policy.Device.ClientVersion == "" ||
+			(policy.Device.Platform != "win32" && policy.Device.Platform != "darwin") ||
+			(policy.Device.Arch != "x64" && policy.Device.Arch != "arm64") ||
+			utf8RuneCount(policy.Device.DeviceID) > 64 || utf8RuneCount(policy.Device.DeviceName) > 128 ||
+			utf8RuneCount(policy.Device.ClientVersion) > 32 {
+			return ErrLoginSessionInvalid
+		}
+	default:
+		return ErrLoginSessionInvalid
+	}
+	return nil
+}
+
+func utf8RuneCount(value string) int {
+	return len([]rune(value))
 }
 
 func ValidateLoginSession(identity AuthIdentity) (*model.UserSession, *model.UserBase, error) {
@@ -136,7 +233,8 @@ func ValidateLoginSession(identity AuthIdentity) (*model.UserSession, *model.Use
 		return nil, nil, err
 	}
 	now := time.Now().Unix()
-	if session.UserID != identity.UserID || session.Status != model.UserSessionStatusActive || session.RevokedAt != 0 || session.ExpiresAt <= now || session.Version != identity.SessionVersion || session.UserAuthVersion != identity.UserAuthVersion {
+	if session.UserID != identity.UserID || session.Status != model.UserSessionStatusActive || session.RevokedAt != 0 || session.ExpiresAt <= now || session.Version != identity.SessionVersion || session.UserAuthVersion != identity.UserAuthVersion ||
+		(session.ClientType != model.UserSessionClientWeb && session.ClientType != model.UserSessionClientDesktop) {
 		return nil, nil, ErrLoginSessionRevoked
 	}
 	user, err := model.GetUserCache(identity.UserID)
@@ -215,6 +313,14 @@ func advanceCurrentSessionToVersion(identity AuthIdentity, nextUserAuthVersion i
 }
 
 func RefreshLoginSession(rawRefreshToken, expectedSID, ip, userAgent string) (*AuthBundle, *model.User, error) {
+	return refreshLoginSession(rawRefreshToken, expectedSID, model.UserSessionClientWeb, ip, userAgent)
+}
+
+func RefreshDesktopLoginSession(rawRefreshToken, expectedSID, ip, userAgent string) (*AuthBundle, *model.User, error) {
+	return refreshLoginSession(rawRefreshToken, expectedSID, model.UserSessionClientDesktop, ip, userAgent)
+}
+
+func refreshLoginSession(rawRefreshToken, expectedSID, clientType, ip, userAgent string) (*AuthBundle, *model.User, error) {
 	sid, secret, ok := splitRefreshToken(rawRefreshToken)
 	if !ok {
 		return nil, nil, ErrRefreshTokenInvalid
@@ -231,6 +337,9 @@ func RefreshLoginSession(rawRefreshToken, expectedSID, ip, userAgent string) (*A
 	}
 	if session.Status != model.UserSessionStatusActive || session.RevokedAt != 0 || session.ExpiresAt <= time.Now().Unix() {
 		return nil, nil, ErrLoginSessionRevoked
+	}
+	if session.ClientType != clientType {
+		return nil, nil, ErrRefreshTokenInvalid
 	}
 	userCache, err := model.GetUserCache(session.UserID)
 	if err != nil {
@@ -277,6 +386,14 @@ func RefreshLoginSession(rawRefreshToken, expectedSID, ip, userAgent string) (*A
 }
 
 func RevokeByRefreshToken(rawRefreshToken, expectedSID, reason string) error {
+	return revokeByRefreshToken(rawRefreshToken, expectedSID, model.UserSessionClientWeb, reason)
+}
+
+func RevokeDesktopByRefreshToken(rawRefreshToken, expectedSID, reason string) error {
+	return revokeByRefreshToken(rawRefreshToken, expectedSID, model.UserSessionClientDesktop, reason)
+}
+
+func revokeByRefreshToken(rawRefreshToken, expectedSID, clientType, reason string) error {
 	sid, secret, ok := splitRefreshToken(rawRefreshToken)
 	if !ok {
 		return nil
@@ -284,7 +401,17 @@ func RevokeByRefreshToken(rawRefreshToken, expectedSID, reason string) error {
 	if expectedSID = strings.TrimSpace(expectedSID); expectedSID != "" && expectedSID != sid {
 		return ErrLoginSessionMismatch
 	}
-	_, err := model.RevokeUserSessionByRefreshHash(sid, hashRefreshSecret(secret), reason)
+	session, err := model.GetUserSessionCached(sid)
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) || errors.Is(err, model.ErrUserSessionInactive) {
+			return nil
+		}
+		return err
+	}
+	if session.ClientType != clientType {
+		return ErrRefreshTokenInvalid
+	}
+	_, err = model.RevokeUserSessionByRefreshHash(sid, hashRefreshSecret(secret), reason)
 	return err
 }
 
@@ -390,7 +517,7 @@ func issueAuthBundle(session *model.UserSession, rawRefreshToken string, current
 		UserAuthVersion: session.UserAuthVersion,
 		SessionVersion:  session.Version,
 	}
-	accessToken, accessExpiresAt, err := IssueAccessToken(identity)
+	accessToken, accessExpiresAt, err := issueSessionAccessToken(identity, session.ExpiresAt)
 	if err != nil {
 		return nil, err
 	}
@@ -404,9 +531,14 @@ func issueAuthBundle(session *model.UserSession, rawRefreshToken string, current
 }
 
 func sessionView(session *model.UserSession, current bool) LoginSessionView {
-	return LoginSessionView{
+	clientType := session.ClientType
+	if clientType == "" {
+		clientType = model.UserSessionClientWeb
+	}
+	view := LoginSessionView{
 		SID:          session.SID,
 		Current:      current,
+		ClientType:   clientType,
 		LoginMethod:  session.LoginMethod,
 		IP:           session.IP,
 		UserAgent:    session.UserAgent,
@@ -414,6 +546,18 @@ func sessionView(session *model.UserSession, current bool) LoginSessionView {
 		LastActiveAt: session.LastActiveAt,
 		ExpiresAt:    session.ExpiresAt,
 	}
+	if clientType == model.UserSessionClientDesktop {
+		view.DeviceID = stringPointer(session.DeviceID)
+		view.DeviceName = stringPointer(session.DeviceName)
+		view.Platform = stringPointer(session.Platform)
+		view.Arch = stringPointer(session.Arch)
+		view.ClientVersion = stringPointer(session.ClientVersion)
+	}
+	return view
+}
+
+func stringPointer(value string) *string {
+	return &value
 }
 
 func splitRefreshToken(raw string) (string, string, bool) {

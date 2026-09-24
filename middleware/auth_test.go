@@ -87,6 +87,78 @@ func createMiddlewarePATUser(t *testing.T, username, token string) *model.User {
 	return user
 }
 
+func TestDesktopSessionUsesServerSideAllowlist(t *testing.T) {
+	setupDashboardAuthMiddlewareTest(t)
+	gin.SetMode(gin.TestMode)
+	admin := createMiddlewarePATUser(t, "desktop-admin", "desktop-admin-pat")
+	require.NoError(t, model.DB.Model(admin).Update("role", common.RoleRootUser).Error)
+	admin.Role = common.RoleRootUser
+	now := time.Now().Unix()
+	session := &model.UserSession{
+		SID: "desktop-admin-session", UserID: admin.Id, Version: 1, UserAuthVersion: admin.AuthVersion,
+		Status: model.UserSessionStatusActive, RefreshHash: "desktop-refresh", LoginMethod: "password",
+		ClientType: model.UserSessionClientDesktop, DeviceID: "install-id", DeviceName: "desktop",
+		Platform: "win32", Arch: "x64", ClientVersion: "1.0.0", LastActiveAt: now, ExpiresAt: now + 3600,
+	}
+	require.NoError(t, model.CreateUserSession(session))
+	token, _, err := service.IssueAccessToken(service.AuthIdentity{
+		UserID: admin.Id, SessionID: session.SID, UserAuthVersion: session.UserAuthVersion,
+		SessionVersion: session.Version,
+	})
+	require.NoError(t, err)
+
+	router := gin.New()
+	router.GET("/api/user/self", UserAuth(), func(c *gin.Context) { c.Status(http.StatusNoContent) })
+	router.GET("/api/option/", RootAuth(), func(c *gin.Context) { c.Status(http.StatusNoContent) })
+	router.DELETE("/api/user/self", UserAuth(), func(c *gin.Context) { c.Status(http.StatusNoContent) })
+
+	for _, test := range []struct {
+		method string
+		path   string
+		want   int
+	}{
+		{method: http.MethodGet, path: "/api/user/self", want: http.StatusNoContent},
+		{method: http.MethodGet, path: "/api/option/", want: http.StatusForbidden},
+		{method: http.MethodDelete, path: "/api/user/self", want: http.StatusForbidden},
+	} {
+		request := httptest.NewRequest(test.method, test.path, nil)
+		request.Header.Set("Authorization", "Bearer "+token)
+		response := httptest.NewRecorder()
+		router.ServeHTTP(response, request)
+		assert.Equal(t, test.want, response.Code, test.method+" "+test.path)
+		if test.want == http.StatusForbidden {
+			assert.Contains(t, response.Body.String(), "AUTH_INSUFFICIENT_PRIVILEGE")
+		}
+	}
+}
+
+func TestDesktopAuthorizationUsesSessionClientType(t *testing.T) {
+	setupDashboardAuthMiddlewareTest(t)
+	admin := createMiddlewarePATUser(t, "desktop-authoritative-admin", "desktop-authoritative-pat")
+	require.NoError(t, model.DB.Model(admin).Update("role", common.RoleRootUser).Error)
+	now := time.Now().Unix()
+	session := &model.UserSession{
+		SID: "desktop-authoritative-session", UserID: admin.Id, Version: 1, UserAuthVersion: admin.AuthVersion,
+		Status: model.UserSessionStatusActive, RefreshHash: "desktop-authoritative-refresh", LoginMethod: "password",
+		ClientType: model.UserSessionClientDesktop, DeviceID: "install-id", DeviceName: "desktop",
+		Platform: "darwin", Arch: "arm64", ClientVersion: "1.0.0", LastActiveAt: now, ExpiresAt: now + 3600,
+	}
+	require.NoError(t, model.CreateUserSession(session))
+	tokenWithoutClientClaim, _, err := service.IssueAccessToken(service.AuthIdentity{
+		UserID: admin.Id, SessionID: session.SID, UserAuthVersion: session.UserAuthVersion, SessionVersion: session.Version,
+	})
+	require.NoError(t, err)
+
+	router := gin.New()
+	router.GET("/api/option/", RootAuth(), func(c *gin.Context) { c.Status(http.StatusNoContent) })
+	request := httptest.NewRequest(http.MethodGet, "/api/option/", nil)
+	request.Header.Set("Authorization", "Bearer "+tokenWithoutClientClaim)
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, request)
+	assert.Equal(t, http.StatusForbidden, response.Code)
+	assert.Contains(t, response.Body.String(), "AUTH_INSUFFICIENT_PRIVILEGE")
+}
+
 func TestUserAuthAllowsOpaqueDottedPAT(t *testing.T) {
 	setupDashboardAuthMiddlewareTest(t)
 	user := createMiddlewarePATUser(t, "dotted-pat-user", "opaque.key.with-dots")

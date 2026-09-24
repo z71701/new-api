@@ -27,11 +27,26 @@ type LegacyGitHubMigration struct {
 
 // loginFlowPayload stays comparable; completion compares it with the bound copy.
 type loginFlowPayload struct {
-	AuthVersion int64  `json:"auth_version"`
-	LoginMethod string `json:"login_method"`
+	AuthVersion int64         `json:"auth_version"`
+	LoginMethod string        `json:"login_method"`
+	Policy      SessionPolicy `json:"session_policy"`
 	// The GitHub binding rewrite waiting for this verification, if any.
 	PendingGitHubID       string `json:"pending_github_id,omitempty"`
 	PendingGitHubLegacyID string `json:"pending_github_legacy_id,omitempty"`
+}
+
+func decodeLoginFlowPayload(encoded string) (loginFlowPayload, error) {
+	var payload loginFlowPayload
+	if err := common.UnmarshalJsonStr(encoded, &payload); err != nil {
+		return loginFlowPayload{}, err
+	}
+	if payload.Policy.ClientType == "" {
+		payload.Policy = WebSessionPolicy()
+	}
+	if payload.AuthVersion <= 0 || payload.LoginMethod == "" || validateSessionPolicy(payload.Policy) != nil {
+		return loginFlowPayload{}, model.ErrAuthFlowInvalid
+	}
+	return payload, nil
 }
 
 // LoginVerification is server-owned state read from a primary-authenticated flow.
@@ -43,7 +58,19 @@ type LoginVerification struct {
 }
 
 func StartLoginVerification(user *model.User, loginMethod string, migration *LegacyGitHubMigration) (*LoginChallenge, error) {
-	if user == nil || user.Id <= 0 || user.AuthVersion <= 0 || loginMethod == "" {
+	return startLoginVerification(user, loginMethod, migration, WebSessionPolicy())
+}
+
+func StartDesktopLoginVerification(user *model.User, loginMethod string, device SessionDeviceMetadata) (*LoginChallenge, error) {
+	policy, err := NewDesktopSessionPolicy(device)
+	if err != nil {
+		return nil, err
+	}
+	return startLoginVerification(user, loginMethod, nil, policy)
+}
+
+func startLoginVerification(user *model.User, loginMethod string, migration *LegacyGitHubMigration, policy SessionPolicy) (*LoginChallenge, error) {
+	if user == nil || user.Id <= 0 || user.AuthVersion <= 0 || loginMethod == "" || validateSessionPolicy(policy) != nil {
 		return nil, model.ErrAuthFlowInvalid
 	}
 	state, err := model.GetUserVerificationState(user.Id)
@@ -69,7 +96,7 @@ func StartLoginVerification(user *model.User, loginMethod string, migration *Leg
 	if !available {
 		return nil, ErrVerificationUnavailable
 	}
-	payload := loginFlowPayload{AuthVersion: state.AuthVersion, LoginMethod: loginMethod}
+	payload := loginFlowPayload{AuthVersion: state.AuthVersion, LoginMethod: loginMethod, Policy: policy}
 	if migration != nil {
 		payload.PendingGitHubID, payload.PendingGitHubLegacyID = migration.GitHubID, migration.LegacyID
 	}
@@ -89,12 +116,20 @@ func StartLoginVerification(user *model.User, loginMethod string, migration *Leg
 }
 
 func RequireLoginVerification(token, method string) (*LoginVerification, error) {
+	return requireLoginVerification(token, method, model.UserSessionClientWeb)
+}
+
+func RequireDesktopLoginVerification(token, method string) (*LoginVerification, error) {
+	return requireLoginVerification(token, method, model.UserSessionClientDesktop)
+}
+
+func requireLoginVerification(token, method, clientType string) (*LoginVerification, error) {
 	flow, err := model.GetAuthFlow(token, model.AuthFlowMatch{Purpose: model.AuthFlowPurposeLoginVerification})
 	if err != nil {
 		return nil, err
 	}
-	var payload loginFlowPayload
-	if err := common.UnmarshalJsonStr(flow.Payload, &payload); err != nil || payload.AuthVersion <= 0 || payload.LoginMethod == "" {
+	payload, err := decodeLoginFlowPayload(flow.Payload)
+	if err != nil || payload.Policy.ClientType != clientType {
 		return nil, model.ErrAuthFlowInvalid
 	}
 	state, err := model.GetUserVerificationState(flow.UserId)
@@ -151,14 +186,14 @@ func CompleteLoginVerification(token string, verification *LoginVerification, me
 	if verification == nil || verification.Flow == nil || verification.State == nil {
 		return nil, nil, model.ErrAuthFlowInvalid
 	}
-	session, refreshSecret, err := newLoginSession(verification.State.UserID, verification.payload.AuthVersion, verification.payload.LoginMethod, ip, userAgent)
+	session, refreshSecret, err := newLoginSession(verification.State.UserID, verification.payload.AuthVersion, verification.payload.LoginMethod, ip, userAgent, verification.payload.Policy)
 	if err != nil {
 		return nil, nil, err
 	}
 	var migration *LegacyGitHubMigration
 	if err := model.CreateUserSessionFromLoginFlow(token, session, func(tx *gorm.DB, flow *model.AuthFlow, state *model.UserVerificationState) error {
-		var payload loginFlowPayload
-		if flow.Id != verification.Flow.Id || common.UnmarshalJsonStr(flow.Payload, &payload) != nil || payload != verification.payload {
+		payload, err := decodeLoginFlowPayload(flow.Payload)
+		if err != nil || flow.Id != verification.Flow.Id || payload != verification.payload {
 			return model.ErrAuthFlowInvalid
 		}
 		if err := requireLoginVerificationMethod(state, method); err != nil {

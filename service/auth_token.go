@@ -58,11 +58,31 @@ func authSigningKey(purpose string) []byte {
 }
 
 func IssueAccessToken(identity AuthIdentity) (string, int64, error) {
-	if identity.UserID <= 0 || identity.SessionID == "" || identity.UserAuthVersion <= 0 || identity.SessionVersion <= 0 {
+	return issueAccessToken(identity, 0)
+}
+
+func issueSessionAccessToken(identity AuthIdentity, sessionExpiresAt int64) (string, int64, error) {
+	return issueAccessToken(identity, sessionExpiresAt)
+}
+
+func issueAccessToken(identity AuthIdentity, sessionExpiresAt int64) (string, int64, error) {
+	return issueAccessTokenAt(identity, sessionExpiresAt, time.Now())
+}
+
+func issueAccessTokenAt(identity AuthIdentity, sessionExpiresAt int64, now time.Time) (string, int64, error) {
+	if identity.UserID <= 0 || identity.SessionID == "" || identity.UserAuthVersion <= 0 || identity.SessionVersion <= 0 || now.IsZero() {
 		return "", 0, ErrAuthTokenInvalid
 	}
-	now := time.Now()
 	expiresAt := now.Add(AccessTokenTTL)
+	if sessionExpiresAt > 0 {
+		sessionDeadline := time.Unix(sessionExpiresAt, 0)
+		if !sessionDeadline.After(now) {
+			return "", 0, ErrAuthTokenExpired
+		}
+		if sessionDeadline.Before(expiresAt) {
+			expiresAt = sessionDeadline
+		}
+	}
 	claims := authClaims{
 		TokenUse:        accessTokenUse,
 		SessionID:       identity.SessionID,
