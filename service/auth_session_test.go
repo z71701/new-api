@@ -95,6 +95,106 @@ func cachedLoginSessionKey(t *testing.T, server *miniredis.Miniredis) string {
 	return ""
 }
 
+func TestDesktopLoginSessionPolicyAndClientIsolation(t *testing.T) {
+	useTestSessionSecret(t)
+	user := setupAuthSessionTestDB(t)
+	before := time.Now().Unix()
+	device := SessionDeviceMetadata{
+		DeviceID:      " install-id ",
+		DeviceName:    " My desktop ",
+		Platform:      "win32",
+		Arch:          "x64",
+		ClientVersion: "1.0.0",
+	}
+
+	bundle, err := CreateDesktopLoginSession(user.Id, "password", "127.0.0.1", "desktop-agent", device)
+	require.NoError(t, err)
+	assert.Equal(t, model.UserSessionClientDesktop, bundle.Session.ClientType)
+	assert.Equal(t, "install-id", *bundle.Session.DeviceID)
+	assert.Equal(t, "My desktop", *bundle.Session.DeviceName)
+	assert.Equal(t, "win32", *bundle.Session.Platform)
+	assert.Equal(t, "x64", *bundle.Session.Arch)
+	assert.Equal(t, "1.0.0", *bundle.Session.ClientVersion)
+	assert.GreaterOrEqual(t, bundle.Session.ExpiresAt-before, int64(DesktopLoginSessionTTL/time.Second)-1)
+	assert.LessOrEqual(t, bundle.Session.ExpiresAt-before, int64(DesktopLoginSessionTTL/time.Second)+1)
+
+	identity, err := ParseAccessToken(bundle.AccessToken)
+	require.NoError(t, err)
+	assert.NotEqual(t, model.UserSessionClientDesktop, identity.SessionID)
+	assert.LessOrEqual(t, bundle.AccessExpiresAt, bundle.Session.ExpiresAt)
+
+	_, _, err = RefreshLoginSession(bundle.RefreshToken, bundle.Session.SID, "127.0.0.1", "browser-agent")
+	assert.ErrorIs(t, err, ErrRefreshTokenInvalid)
+	refreshed, _, err := RefreshDesktopLoginSession(bundle.RefreshToken, bundle.Session.SID, "127.0.0.2", "desktop-agent-2")
+	require.NoError(t, err)
+	assert.Equal(t, bundle.Session.ExpiresAt, refreshed.Session.ExpiresAt, "refresh must preserve the absolute desktop deadline")
+	assert.ErrorIs(t, RevokeByRefreshToken(refreshed.RefreshToken, refreshed.Session.SID, "web-logout"), ErrRefreshTokenInvalid)
+	require.NoError(t, RevokeDesktopByRefreshToken(refreshed.RefreshToken, refreshed.Session.SID, "desktop-logout"))
+}
+
+func TestLegacyLoginFlowPayloadDefaultsToWebPolicy(t *testing.T) {
+	payload, err := decodeLoginFlowPayload(`{"auth_version":3,"login_method":"password"}`)
+	require.NoError(t, err)
+	assert.Equal(t, WebSessionPolicy(), payload.Policy)
+}
+
+func TestDesktopSessionPolicyRejectsInvalidDeviceMetadata(t *testing.T) {
+	setupAuthSessionTestDB(t)
+	tests := []SessionDeviceMetadata{
+		{DeviceName: "desktop", Platform: "win32", Arch: "x64", ClientVersion: "1.0.0"},
+		{DeviceID: "id", DeviceName: "desktop", Platform: "linux", Arch: "x64", ClientVersion: "1.0.0"},
+		{DeviceID: "id", DeviceName: "desktop", Platform: "win32", Arch: "amd64", ClientVersion: "1.0.0"},
+		{DeviceID: strings.Repeat("界", 65), DeviceName: "desktop", Platform: "win32", Arch: "x64", ClientVersion: "1.0.0"},
+		{DeviceID: "id", DeviceName: strings.Repeat("机", 129), Platform: "win32", Arch: "x64", ClientVersion: "1.0.0"},
+		{DeviceID: "id", DeviceName: "desktop", Platform: "win32", Arch: "x64", ClientVersion: strings.Repeat("v", 33)},
+	}
+	for _, device := range tests {
+		_, err := NewDesktopSessionPolicy(device)
+		assert.ErrorIs(t, err, ErrLoginSessionInvalid)
+	}
+}
+
+func TestIssueAccessTokenTruncatesAtSessionDeadline(t *testing.T) {
+	useTestSessionSecret(t)
+	identity := AuthIdentity{UserID: 42, SessionID: "deadline-session", UserAuthVersion: 1, SessionVersion: 1}
+	now := time.Now().Truncate(time.Second)
+	deadline := now.Add(30 * time.Second).Unix()
+
+	token, expiresAt, err := issueAccessTokenAt(identity, deadline, now)
+	require.NoError(t, err)
+	assert.Equal(t, deadline, expiresAt)
+	parsed, err := ParseAccessToken(token)
+	require.NoError(t, err)
+	assert.Equal(t, identity, parsed)
+
+	_, _, err = issueAccessTokenAt(identity, now.Unix(), now)
+	assert.ErrorIs(t, err, ErrAuthTokenExpired)
+}
+
+func TestLoginFlowRejectsCrossClientExchange(t *testing.T) {
+	useTestSessionSecret(t)
+	user := setupAuthSessionTestDB(t)
+	require.NoError(t, model.DB.AutoMigrate(&model.TwoFA{}, &model.PasskeyCredential{}))
+	factor := &model.TwoFA{UserId: user.Id, Secret: "JBSWY3DPEHPK3PXP", IsEnabled: true}
+	require.NoError(t, model.DB.Create(factor).Error)
+
+	desktop, err := StartDesktopLoginVerification(user, "password", SessionDeviceMetadata{
+		DeviceID: "desktop-id", DeviceName: "desktop", Platform: "darwin", Arch: "arm64", ClientVersion: "1.0.0",
+	})
+	require.NoError(t, err)
+	_, err = RequireLoginVerification(desktop.FlowToken, VerificationMethodTwoFA)
+	assert.ErrorIs(t, err, model.ErrAuthFlowInvalid)
+	_, err = RequireDesktopLoginVerification(desktop.FlowToken, VerificationMethodTwoFA)
+	require.NoError(t, err)
+
+	web, err := StartLoginVerification(user, "password", nil)
+	require.NoError(t, err)
+	_, err = RequireDesktopLoginVerification(web.FlowToken, VerificationMethodTwoFA)
+	assert.ErrorIs(t, err, model.ErrAuthFlowInvalid)
+	_, err = RequireLoginVerification(web.FlowToken, VerificationMethodTwoFA)
+	require.NoError(t, err)
+}
+
 func TestCreateLoginSessionEnforcesActiveLimitAcrossAuthVersions(t *testing.T) {
 	useTestSessionSecret(t)
 	user := setupAuthSessionTestDB(t)
@@ -330,6 +430,12 @@ func TestLoginSessionCreateRefreshAndRevoke(t *testing.T) {
 
 	bundle, err := CreateLoginSession(user.Id, "password", "127.0.0.1", "test-agent")
 	require.NoError(t, err)
+	assert.Equal(t, model.UserSessionClientWeb, bundle.Session.ClientType)
+	assert.Nil(t, bundle.Session.DeviceID)
+	assert.Nil(t, bundle.Session.DeviceName)
+	assert.Nil(t, bundle.Session.Platform)
+	assert.Nil(t, bundle.Session.Arch)
+	assert.Nil(t, bundle.Session.ClientVersion)
 	assert.NotEmpty(t, bundle.RefreshToken)
 	identity, err := ParseAccessToken(bundle.AccessToken)
 	require.NoError(t, err)

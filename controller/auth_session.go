@@ -56,6 +56,15 @@ func AuthLogout(c *gin.Context) {
 
 	if rawAccessToken, ok := dashboardBearer(c.GetHeader("Authorization")); ok {
 		if identity, err := service.ParseAccessToken(rawAccessToken); err == nil {
+			session, sessionErr := model.GetUserSessionCached(identity.SessionID)
+			if sessionErr != nil {
+				writeAuthSessionError(c, sessionErr)
+				return
+			}
+			if session.UserID != identity.UserID || session.ClientType != model.UserSessionClientWeb {
+				writeAuthSessionError(c, service.ErrRefreshTokenInvalid)
+				return
+			}
 			if expectedSID != "" && expectedSID != identity.SessionID {
 				writeAuthSessionError(c, service.ErrLoginSessionMismatch)
 				return

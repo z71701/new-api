@@ -18,6 +18,74 @@ import (
 	"gorm.io/gorm/logger"
 )
 
+type desktopSessionMigrationTarget struct {
+	SID           string `gorm:"column:sid;type:varchar(64);primaryKey"`
+	ClientType    string `gorm:"column:client_type;type:varchar(16);not null;default:web"`
+	DeviceID      string `gorm:"column:device_id;type:varchar(128)"`
+	DeviceName    string `gorm:"column:device_name;type:varchar(512)"`
+	Platform      string `gorm:"column:platform;type:varchar(16)"`
+	Arch          string `gorm:"column:arch;type:varchar(16)"`
+	ClientVersion string `gorm:"column:client_version;type:varchar(64)"`
+}
+
+func testDesktopSessionColumnsMigration(t *testing.T, db *gorm.DB, recorder *migrationSQLRecorder) {
+	t.Helper()
+	tableName := fmt.Sprintf("user_session_desktop_migration_%d", time.Now().UnixNano())
+	t.Cleanup(func() { _ = db.Migrator().DropTable(tableName) })
+
+	require.NoError(t, db.Table(tableName).Migrator().CreateTable(&previousRefreshHashMigrationLegacy{}))
+	require.NoError(t, db.Table(tableName).Create(&previousRefreshHashMigrationLegacy{SID: "legacy-web-session"}).Error)
+	require.NoError(t, db.Table(tableName).AutoMigrate(&desktopSessionMigrationTarget{}))
+
+	var row desktopSessionMigrationTarget
+	require.NoError(t, db.Table(tableName).Where("sid = ?", "legacy-web-session").First(&row).Error)
+	assert.Equal(t, UserSessionClientWeb, row.ClientType)
+	assert.Empty(t, row.DeviceID)
+	assert.Empty(t, row.DeviceName)
+	assert.Empty(t, row.Platform)
+	assert.Empty(t, row.Arch)
+	assert.Empty(t, row.ClientVersion)
+
+	recorder.reset()
+	require.NoError(t, db.Table(tableName).AutoMigrate(&desktopSessionMigrationTarget{}))
+	assert.Empty(t, recorder.schemaMutations(), "a second desktop session migration must not repeat DDL")
+}
+
+func TestUserSessionDesktopColumnsMigrationSQLite(t *testing.T) {
+	recorder := &migrationSQLRecorder{}
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{Logger: recorder})
+	require.NoError(t, err)
+	testDesktopSessionColumnsMigration(t, db, recorder)
+}
+
+func TestUserSessionDesktopColumnsMigrationConfiguredDatabases(t *testing.T) {
+	tests := []struct {
+		name      string
+		env       string
+		dialector func(string) gorm.Dialector
+	}{
+		{name: "mysql", env: "TEST_MYSQL_DSN", dialector: func(dsn string) gorm.Dialector { return mysql.Open(dsn) }},
+		{name: "postgres", env: "TEST_POSTGRES_DSN", dialector: func(dsn string) gorm.Dialector {
+			return postgres.New(postgres.Config{DSN: dsn, PreferSimpleProtocol: true})
+		}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			dsn := strings.TrimSpace(os.Getenv(test.env))
+			if dsn == "" {
+				t.Skip(test.env + " is not configured")
+			}
+			recorder := &migrationSQLRecorder{}
+			db, err := gorm.Open(test.dialector(dsn), &gorm.Config{Logger: recorder})
+			require.NoError(t, err)
+			sqlDB, err := db.DB()
+			require.NoError(t, err)
+			t.Cleanup(func() { _ = sqlDB.Close() })
+			testDesktopSessionColumnsMigration(t, db, recorder)
+		})
+	}
+}
+
 type previousRefreshHashMigrationLegacy struct {
 	SID                 string `gorm:"column:sid;type:varchar(64);primaryKey"`
 	PreviousRefreshHash string `gorm:"column:previous_refresh_hash;type:char(64)"`

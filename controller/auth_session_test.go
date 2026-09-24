@@ -67,6 +67,47 @@ func TestAuthLogoutRejectsRefreshCookieSessionMismatch(t *testing.T) {
 	}
 }
 
+func TestWebAuthLogoutRejectsDesktopAccessToken(t *testing.T) {
+	previousDB := model.DB
+	previousRedis := common.RedisEnabled
+	previousSecret := common.SessionSecret
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	require.NoError(t, err)
+	require.NoError(t, db.AutoMigrate(&model.User{}, &model.UserSession{}))
+	model.DB = db
+	common.RedisEnabled = false
+	common.SessionSecret = "desktop-web-logout-test-secret"
+	t.Cleanup(func() {
+		model.DB = previousDB
+		common.RedisEnabled = previousRedis
+		common.SessionSecret = previousSecret
+	})
+
+	user := &model.User{
+		Username: "desktop-logout-user", Password: "unused", Role: common.RoleCommonUser,
+		Status: common.UserStatusEnabled, Group: "default", AuthVersion: 1,
+	}
+	require.NoError(t, db.Create(user).Error)
+	bundle, err := service.CreateDesktopLoginSession(user.Id, "password", "127.0.0.1", "desktop-agent", service.SessionDeviceMetadata{
+		DeviceID: "desktop-id", DeviceName: "desktop", Platform: "win32", Arch: "x64", ClientVersion: "1.0.0",
+	})
+	require.NoError(t, err)
+
+	gin.SetMode(gin.TestMode)
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodPost, "/api/user/auth/logout", nil)
+	c.Request.Header.Set("Authorization", "Bearer "+bundle.AccessToken)
+	c.Request.Header.Set("X-Auth-Session", bundle.Session.SID)
+
+	AuthLogout(c)
+
+	assert.Equal(t, http.StatusUnauthorized, recorder.Code)
+	stored, err := model.GetUserSessionBySID(bundle.Session.SID)
+	require.NoError(t, err)
+	assert.Equal(t, model.UserSessionStatusActive, stored.Status)
+}
+
 func TestWriteAuthSessionErrorMapsSessionGrowthLimits(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	tests := []struct {

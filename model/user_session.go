@@ -18,7 +18,10 @@ const (
 	UserSessionStatusRevoking = "revoking"
 	UserSessionStatusRevoked  = "revoked"
 
-	userSessionCacheSchema      = 1
+	UserSessionClientWeb     = "web"
+	UserSessionClientDesktop = "desktop"
+
+	userSessionCacheSchema      = 2
 	userSessionListLimit        = 100
 	userSessionRevokeBatchSize  = 500
 	userSessionCleanupScanLimit = 1000
@@ -49,8 +52,14 @@ type UserSession struct {
 	PreviousRefreshHash string `json:"-" gorm:"type:varchar(64)"`
 	PreviousValidUntil  int64  `json:"-" gorm:"type:bigint;not null;default:0"`
 	LoginMethod         string `json:"login_method" gorm:"type:varchar(32);not null"`
+	ClientType          string `json:"client_type" gorm:"type:varchar(16);not null;default:web"`
 	IP                  string `json:"ip" gorm:"type:varchar(64)"`
 	UserAgent           string `json:"user_agent" gorm:"type:text"`
+	DeviceID            string `json:"device_id,omitempty" gorm:"type:varchar(128)"`
+	DeviceName          string `json:"device_name,omitempty" gorm:"type:varchar(512)"`
+	Platform            string `json:"platform,omitempty" gorm:"type:varchar(16)"`
+	Arch                string `json:"arch,omitempty" gorm:"type:varchar(16)"`
+	ClientVersion       string `json:"client_version,omitempty" gorm:"type:varchar(64)"`
 	CreatedAt           int64  `json:"created_at" gorm:"autoCreateTime;column:created_at;index:idx_user_sessions_user_created,priority:2"`
 	LastActiveAt        int64  `json:"last_active_at" gorm:"type:bigint;not null;column:last_active_at"`
 	ExpiresAt           int64  `json:"expires_at" gorm:"type:bigint;not null;column:expires_at;index:idx_user_sessions_user_status_expiry,priority:3;index:idx_user_sessions_expires_at"`
@@ -64,6 +73,9 @@ func (UserSession) TableName() string {
 
 func (session *UserSession) AfterFind(_ *gorm.DB) error {
 	session.PreviousRefreshHash = strings.TrimSpace(session.PreviousRefreshHash)
+	if session.ClientType == "" {
+		session.ClientType = UserSessionClientWeb
+	}
 	return nil
 }
 
@@ -74,8 +86,14 @@ type userSessionCacheEntry struct {
 	UserAuthVersion int64
 	Status          string
 	LoginMethod     string
+	ClientType      string
 	IP              string
 	UserAgent       string
+	DeviceID        string
+	DeviceName      string
+	Platform        string
+	Arch            string
+	ClientVersion   string
 	CreatedAt       int64
 	LastActiveAt    int64
 	ExpiresAt       int64
@@ -92,8 +110,14 @@ func (session *UserSession) cacheEntry() *userSessionCacheEntry {
 		UserAuthVersion: session.UserAuthVersion,
 		Status:          session.Status,
 		LoginMethod:     session.LoginMethod,
+		ClientType:      session.ClientType,
 		IP:              session.IP,
 		UserAgent:       session.UserAgent,
+		DeviceID:        session.DeviceID,
+		DeviceName:      session.DeviceName,
+		Platform:        session.Platform,
+		Arch:            session.Arch,
+		ClientVersion:   session.ClientVersion,
 		CreatedAt:       session.CreatedAt,
 		LastActiveAt:    session.LastActiveAt,
 		ExpiresAt:       session.ExpiresAt,
@@ -111,8 +135,14 @@ func (entry *userSessionCacheEntry) session() *UserSession {
 		UserAuthVersion: entry.UserAuthVersion,
 		Status:          entry.Status,
 		LoginMethod:     entry.LoginMethod,
+		ClientType:      entry.ClientType,
 		IP:              entry.IP,
 		UserAgent:       entry.UserAgent,
+		DeviceID:        entry.DeviceID,
+		DeviceName:      entry.DeviceName,
+		Platform:        entry.Platform,
+		Arch:            entry.Arch,
+		ClientVersion:   entry.ClientVersion,
 		CreatedAt:       entry.CreatedAt,
 		LastActiveAt:    entry.LastActiveAt,
 		ExpiresAt:       entry.ExpiresAt,
@@ -148,6 +178,12 @@ func createUserSessionWithTx(tx *gorm.DB, session *UserSession) error {
 	}
 	if session.Status == "" {
 		session.Status = UserSessionStatusActive
+	}
+	if session.ClientType == "" {
+		session.ClientType = UserSessionClientWeb
+	}
+	if session.ClientType != UserSessionClientWeb && session.ClientType != UserSessionClientDesktop {
+		return ErrUserSessionInvalid
 	}
 	if session.Status != UserSessionStatusActive || session.RevokedAt != 0 {
 		return ErrUserSessionInvalid
@@ -331,19 +367,23 @@ end
 redis.call('HSET', KEYS[1],
   'SID', ARGV[1], 'UserID', ARGV[2], 'Version', ARGV[3],
   'UserAuthVersion', ARGV[4], 'Status', ARGV[5],
-  'LoginMethod', ARGV[6], 'IP', ARGV[7], 'UserAgent', ARGV[8],
-  'CreatedAt', ARGV[9], 'LastActiveAt', ARGV[10], 'ExpiresAt', ARGV[11],
-  'RevokedAt', ARGV[12], 'RevokedReason', ARGV[13], 'CacheSchema', ARGV[14])
+  'LoginMethod', ARGV[6], 'ClientType', ARGV[7], 'IP', ARGV[8], 'UserAgent', ARGV[9],
+  'DeviceID', ARGV[10], 'DeviceName', ARGV[11], 'Platform', ARGV[12],
+  'Arch', ARGV[13], 'ClientVersion', ARGV[14], 'CreatedAt', ARGV[15],
+  'LastActiveAt', ARGV[16], 'ExpiresAt', ARGV[17], 'RevokedAt', ARGV[18],
+  'RevokedReason', ARGV[19], 'CacheSchema', ARGV[20])
 if ARGV[5] == 'active' then
-  redis.call('PEXPIREAT', KEYS[1], ARGV[15])
+  redis.call('PEXPIREAT', KEYS[1], ARGV[21])
 else
-  redis.call('PEXPIRE', KEYS[1], ARGV[15])
+  redis.call('PEXPIRE', KEYS[1], ARGV[21])
 end
 return 1`
 	result, err := common.RDB.Eval(context.Background(), script, []string{userSessionCacheKey(entry.SID)},
 		entry.SID, entry.UserID, entry.Version, entry.UserAuthVersion, entry.Status,
-		entry.LoginMethod, entry.IP, entry.UserAgent, entry.CreatedAt, entry.LastActiveAt,
-		entry.ExpiresAt, entry.RevokedAt, entry.RevokedReason, entry.CacheSchema, redisExpiration,
+		entry.LoginMethod, entry.ClientType, entry.IP, entry.UserAgent, entry.DeviceID,
+		entry.DeviceName, entry.Platform, entry.Arch, entry.ClientVersion, entry.CreatedAt,
+		entry.LastActiveAt, entry.ExpiresAt, entry.RevokedAt, entry.RevokedReason, entry.CacheSchema,
+		redisExpiration,
 	).Int()
 	if err != nil {
 		return err

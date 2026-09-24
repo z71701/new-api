@@ -25,6 +25,32 @@ import (
 
 const authIdentityContextKey = "auth_identity"
 
+var errDesktopSessionForbidden = errors.New("desktop session is not allowed to access this route")
+
+var desktopSessionRoutes = map[string]map[string]struct{}{
+	http.MethodGet: {
+		"/api/user/self":      {},
+		"/api/user/sessions":  {},
+		"/api/token/":         {},
+		"/api/token/:id":      {},
+		"/api/log/self":       {},
+		"/api/log/self/stat":  {},
+		"/api/data/self":      {},
+		"/api/data/flow/self": {},
+	},
+	http.MethodPost: {
+		"/api/token/":        {},
+		"/api/token/:id/key": {},
+	},
+	http.MethodPut: {
+		"/api/token/": {},
+	},
+	http.MethodDelete: {
+		"/api/token/:id":          {},
+		"/api/user/sessions/:sid": {},
+	},
+}
+
 type dashboardCredentialKind int
 
 const (
@@ -165,9 +191,12 @@ func classifyDashboardCredential(c *gin.Context) (*model.UserBase, service.AuthI
 		if err != nil {
 			return nil, service.AuthIdentity{}, dashboardCredentialInternal, err
 		}
-		_, user, err := service.ValidateLoginSession(identity)
+		session, user, err := service.ValidateLoginSession(identity)
 		if err != nil {
 			return nil, service.AuthIdentity{}, dashboardCredentialInternal, err
+		}
+		if session.ClientType == model.UserSessionClientDesktop && !desktopSessionRouteAllowed(c.Request.Method, c.FullPath()) {
+			return nil, service.AuthIdentity{}, dashboardCredentialInternal, errDesktopSessionForbidden
 		}
 		return user, identity, dashboardCredentialInternal, nil
 	}
@@ -215,7 +244,20 @@ func setDashboardAuthContext(c *gin.Context, user *model.UserBase, identity serv
 	user.WriteContext(c)
 }
 
+func desktopSessionRouteAllowed(method, route string) bool {
+	routes, ok := desktopSessionRoutes[method]
+	if !ok {
+		return false
+	}
+	_, ok = routes[route]
+	return ok
+}
+
 func writeDashboardAuthError(c *gin.Context, err error) {
+	if errors.Is(err, errDesktopSessionForbidden) {
+		c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"success": false, "code": "AUTH_INSUFFICIENT_PRIVILEGE", "message": common.TranslateMessage(c, i18n.MsgAuthInsufficientPrivilege)})
+		return
+	}
 	if errors.Is(err, service.ErrAuthTokenExpired) {
 		c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"success": false, "code": "AUTH_TOKEN_EXPIRED", "message": common.TranslateMessage(c, i18n.MsgAuthNotLoggedIn)})
 		return
@@ -267,9 +309,13 @@ func TokenOrUserAuth() func(c *gin.Context) {
 				writeDashboardAuthError(c, err)
 				return
 			}
-			_, user, err := service.ValidateLoginSession(identity)
+			session, user, err := service.ValidateLoginSession(identity)
 			if err != nil {
 				writeDashboardAuthError(c, err)
+				return
+			}
+			if session.ClientType == model.UserSessionClientDesktop && !desktopSessionRouteAllowed(c.Request.Method, c.FullPath()) {
+				writeDashboardAuthError(c, errDesktopSessionForbidden)
 				return
 			}
 			setDashboardAuthContext(c, user, identity, false)
