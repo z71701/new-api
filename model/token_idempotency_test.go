@@ -1,4 +1,4 @@
-﻿package model
+package model
 
 import (
 	"errors"
@@ -8,9 +8,9 @@ import (
 	"time"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/glebarez/sqlite"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"github.com/glebarez/sqlite"
 	"gorm.io/gorm"
 )
 
@@ -23,10 +23,14 @@ func openIdempotencyTestDB(t *testing.T) *gorm.DB {
 	dsn := fmt.Sprintf("file:%s?mode=memory&cache=shared", strings.ReplaceAll(t.Name(), "/", "_"))
 	db, err := gorm.Open(sqlite.Open(dsn), &gorm.Config{})
 	require.NoError(t, err)
+	originalDB := DB
+	originalLOGDB := LOG_DB
 	DB = db
 	LOG_DB = db
 
 	t.Cleanup(func() {
+		DB = originalDB
+		LOG_DB = originalLOGDB
 		sqlDB, err := db.DB()
 		if err == nil {
 			_ = sqlDB.Close()
