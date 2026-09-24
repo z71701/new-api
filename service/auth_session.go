@@ -1,6 +1,7 @@
 package service
 
 import (
+	"crypto/hmac"
 	"errors"
 	"fmt"
 	"net/http"
@@ -335,8 +336,11 @@ func refreshLoginSession(rawRefreshToken, expectedSID, clientType, ip, userAgent
 		}
 		return nil, nil, ErrRefreshTokenInvalid
 	}
-	if session.Status != model.UserSessionStatusActive || session.RevokedAt != 0 || session.ExpiresAt <= time.Now().Unix() {
+	if session.Status != model.UserSessionStatusActive || session.RevokedAt != 0 {
 		return nil, nil, ErrLoginSessionRevoked
+	}
+	if session.ExpiresAt <= time.Now().Unix() {
+		return nil, nil, ErrLoginSessionInvalid
 	}
 	if session.ClientType != clientType {
 		return nil, nil, ErrRefreshTokenInvalid
@@ -357,6 +361,9 @@ func refreshLoginSession(rawRefreshToken, expectedSID, clientType, ip, userAgent
 	nextSecret := deriveNextRefreshSecret(sid, secret)
 	rotated, err := model.RotateUserSessionRefresh(session.UserID, sid, hashRefreshSecret(secret), hashRefreshSecret(nextSecret), time.Now().Unix(), RefreshReplayWindow)
 	if err != nil {
+		if errors.Is(err, model.ErrUserSessionInactive) {
+			return nil, nil, ErrLoginSessionRevoked
+		}
 		if errors.Is(err, model.ErrUserSessionRefreshRace) && rotated != nil &&
 			hashRefreshSecret(nextSecret) == rotated.RefreshHash {
 			bundle, issueErr := issueAuthBundle(rotated, sid+"."+nextSecret, true)
@@ -391,6 +398,61 @@ func RevokeByRefreshToken(rawRefreshToken, expectedSID, reason string) error {
 
 func RevokeDesktopByRefreshToken(rawRefreshToken, expectedSID, reason string) error {
 	return revokeByRefreshToken(rawRefreshToken, expectedSID, model.UserSessionClientDesktop, reason)
+}
+
+func RevokeDesktopByRefreshTokenStrict(rawRefreshToken, expectedSID, reason string) error {
+	sid, secret, ok := splitRefreshToken(rawRefreshToken)
+	if !ok {
+		return ErrRefreshTokenInvalid
+	}
+	if expectedSID = strings.TrimSpace(expectedSID); expectedSID == "" || expectedSID != sid {
+		return ErrLoginSessionMismatch
+	}
+	session, err := model.GetUserSessionBySID(sid)
+	if err != nil || session.ClientType != model.UserSessionClientDesktop {
+		return ErrRefreshTokenInvalid
+	}
+	presentedHash := hashRefreshSecret(secret)
+	current := hmac.Equal([]byte(session.RefreshHash), []byte(presentedHash))
+	previous := session.PreviousRefreshHash != "" && time.Now().Unix() <= session.PreviousValidUntil &&
+		hmac.Equal([]byte(session.PreviousRefreshHash), []byte(presentedHash))
+	if !current && !previous {
+		return ErrRefreshTokenInvalid
+	}
+	if session.Status != model.UserSessionStatusActive || session.RevokedAt != 0 || session.ExpiresAt <= time.Now().Unix() {
+		return nil
+	}
+	revoked, err := model.RevokeUserSessionByRefreshHash(sid, presentedHash, reason)
+	if err != nil {
+		return err
+	}
+	if !revoked {
+		return ErrRefreshTokenInvalid
+	}
+	return nil
+}
+
+func DesktopRefreshTokenMatchesAccess(rawRefreshToken string, identity AuthIdentity) error {
+	sid, secret, ok := splitRefreshToken(rawRefreshToken)
+	if !ok || identity.UserID <= 0 || identity.SessionID == "" || sid != identity.SessionID {
+		return ErrLoginSessionMismatch
+	}
+	session, err := model.GetUserSessionCached(sid)
+	if err != nil {
+		return ErrLoginSessionMismatch
+	}
+	if session.UserID != identity.UserID || session.ClientType != model.UserSessionClientDesktop ||
+		session.Version != identity.SessionVersion || session.UserAuthVersion != identity.UserAuthVersion {
+		return ErrLoginSessionMismatch
+	}
+	presentedHash := hashRefreshSecret(secret)
+	current := hmac.Equal([]byte(session.RefreshHash), []byte(presentedHash))
+	previous := session.PreviousRefreshHash != "" && time.Now().Unix() <= session.PreviousValidUntil &&
+		hmac.Equal([]byte(session.PreviousRefreshHash), []byte(presentedHash))
+	if !current && !previous {
+		return ErrLoginSessionMismatch
+	}
+	return nil
 }
 
 func revokeByRefreshToken(rawRefreshToken, expectedSID, clientType, reason string) error {
@@ -599,6 +661,8 @@ func authSessionErrorCode(err error) (int, string) {
 		return http.StatusConflict, "AUTH_REFRESH_RACE"
 	case errors.Is(err, ErrAuthTokenExpired):
 		return http.StatusUnauthorized, "AUTH_TOKEN_EXPIRED"
+	case errors.Is(err, ErrLoginSessionInvalid):
+		return http.StatusUnauthorized, "AUTH_SESSION_EXPIRED"
 	case errors.Is(err, ErrLoginSessionRevoked):
 		return http.StatusUnauthorized, "AUTH_SESSION_REVOKED"
 	case errors.Is(err, ErrRefreshTokenInvalid), errors.Is(err, ErrAuthTokenInvalid):

@@ -583,6 +583,12 @@ func TestSecurityAccountEncryptedLongPasswordLogin(t *testing.T) {
 	}
 	_, err = common.DecryptPassword(encrypted, "wrong-key-id")
 	assert.ErrorIs(t, err, common.ErrPasswordEncryptionInvalid)
+	staleKeyID := strings.Repeat("a", 32)
+	if staleKeyID == keyID {
+		staleKeyID = strings.Repeat("b", 32)
+	}
+	_, err = common.DecryptPassword(encrypted, staleKeyID)
+	assert.ErrorIs(t, err, common.ErrPasswordEncryptionKeyStale)
 }
 
 func TestSecurityAccountEmailConfirmationAndAudit(t *testing.T) {

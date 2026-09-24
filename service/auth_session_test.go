@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -95,6 +96,76 @@ func cachedLoginSessionKey(t *testing.T, server *miniredis.Miniredis) string {
 	return ""
 }
 
+func TestDesktopRefreshRotationSecurity(t *testing.T) {
+	useTestSessionSecret(t)
+	user := setupAuthSessionTestDB(t)
+	device := SessionDeviceMetadata{DeviceID: "desktop-id", DeviceName: "desktop", Platform: "win32", Arch: "x64", ClientVersion: "1.0.0"}
+	bundle, err := CreateDesktopLoginSession(user.Id, "password", "127.0.0.1", "desktop-agent", device)
+	require.NoError(t, err)
+	deadline := bundle.Session.ExpiresAt
+
+	rotated, _, err := RefreshDesktopLoginSession(bundle.RefreshToken, bundle.Session.SID, "127.0.0.2", "desktop-agent-2")
+	require.NoError(t, err)
+	assert.NotEqual(t, bundle.RefreshToken, rotated.RefreshToken)
+	assert.Equal(t, deadline, rotated.Session.ExpiresAt)
+
+	recovered, _, err := RefreshDesktopLoginSession(bundle.RefreshToken, bundle.Session.SID, "127.0.0.2", "desktop-agent-2")
+	require.NoError(t, err)
+	assert.Equal(t, rotated.RefreshToken, recovered.RefreshToken)
+	assert.Equal(t, deadline, recovered.Session.ExpiresAt)
+
+	randomToken := bundle.Session.SID + ".random-secret"
+	_, _, err = RefreshDesktopLoginSession(randomToken, bundle.Session.SID, "127.0.0.3", "desktop-agent-3")
+	assert.ErrorIs(t, err, ErrRefreshTokenInvalid)
+	identity, err := ParseAccessToken(rotated.AccessToken)
+	require.NoError(t, err)
+	_, _, err = ValidateLoginSession(identity)
+	require.NoError(t, err, "an unknown refresh token must not revoke the session")
+
+	require.NoError(t, model.DB.Model(&model.UserSession{}).Where("sid = ?", bundle.Session.SID).
+		Update("previous_valid_until", time.Now().Add(-time.Second).Unix()).Error)
+	_, _, err = RefreshDesktopLoginSession(bundle.RefreshToken, bundle.Session.SID, "127.0.0.4", "desktop-agent-4")
+	assert.ErrorIs(t, err, ErrLoginSessionRevoked)
+	_, _, err = ValidateLoginSession(identity)
+	assert.ErrorIs(t, err, ErrLoginSessionRevoked)
+}
+
+func TestDesktopConcurrentRefreshReturnsSingleSuccessor(t *testing.T) {
+	useTestSessionSecret(t)
+	user := setupAuthSessionTestDB(t)
+	device := SessionDeviceMetadata{DeviceID: "desktop-id", DeviceName: "desktop", Platform: "win32", Arch: "x64", ClientVersion: "1.0.0"}
+	bundle, err := CreateDesktopLoginSession(user.Id, "password", "127.0.0.1", "desktop-agent", device)
+	require.NoError(t, err)
+
+	const workers = 8
+	results := make(chan string, workers)
+	errorsCh := make(chan error, workers)
+	var wait sync.WaitGroup
+	for range workers {
+		wait.Go(func() {
+			refreshed, _, refreshErr := RefreshDesktopLoginSession(bundle.RefreshToken, bundle.Session.SID, "127.0.0.2", "desktop-agent-2")
+			if refreshErr != nil {
+				errorsCh <- refreshErr
+				return
+			}
+			results <- refreshed.RefreshToken
+		})
+	}
+	wait.Wait()
+	close(results)
+	close(errorsCh)
+	for refreshErr := range errorsCh {
+		require.NoError(t, refreshErr)
+	}
+	var successor string
+	for refreshToken := range results {
+		if successor == "" {
+			successor = refreshToken
+		}
+		assert.Equal(t, successor, refreshToken)
+	}
+	assert.NotEmpty(t, successor)
+}
 func TestDesktopLoginSessionPolicyAndClientIsolation(t *testing.T) {
 	useTestSessionSecret(t)
 	user := setupAuthSessionTestDB(t)
