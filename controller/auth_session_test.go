@@ -264,6 +264,21 @@ func TestDesktopLogoutRejectsMismatchedAccessToken(t *testing.T) {
 	assert.Equal(t, model.UserSessionStatusActive, stored.Status)
 }
 
+func TestDesktopLogoutIgnoresUnusableOptionalAccessToken(t *testing.T) {
+	user := setupDesktopAuthTest(t)
+	device := service.SessionDeviceMetadata{DeviceID: "install-1", DeviceName: "Workstation", Platform: "win32", Arch: "x64", ClientVersion: "1.0.0"}
+	bundle, err := service.CreateDesktopLoginSession(user.Id, "password", "127.0.0.1", "desktop", device)
+	require.NoError(t, err)
+	body, err := common.Marshal(desktopRefreshRequest{RefreshToken: bundle.RefreshToken, SID: bundle.Session.SID})
+	require.NoError(t, err)
+	response := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(response)
+	c.Request = httptest.NewRequest(http.MethodPost, "/api/desktop/auth/logout", strings.NewReader(string(body)))
+	c.Request.Header.Set("Authorization", "Bearer expired-or-invalid-access-token")
+	DesktopLogout(c)
+	assert.Equal(t, http.StatusOK, response.Code)
+	assert.Contains(t, response.Body.String(), `"logged_out":true`)
+}
 func TestDesktopLoginReturnsVerificationChallengeAndCompletesTOTP(t *testing.T) {
 	user := setupDesktopAuthTest(t)
 	factor := &model.TwoFA{UserId: user.Id, Secret: "JBSWY3DPEHPK3PXP", IsEnabled: true}

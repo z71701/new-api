@@ -189,10 +189,11 @@ func DesktopLogout(c *gin.Context) {
 		return
 	}
 	if rawAccessToken, ok := dashboardBearer(c.GetHeader("Authorization")); ok {
-		identity, err := service.ParseAccessToken(rawAccessToken)
-		if err != nil || service.DesktopRefreshTokenMatchesAccess(request.RefreshToken, identity) != nil {
-			writeDesktopAuthResponse(c, http.StatusConflict, false, "AUTH_SESSION_MISMATCH", "Session credentials do not match", nil)
-			return
+		if identity, err := service.ParseAccessToken(rawAccessToken); err == nil {
+			if service.DesktopRefreshTokenMatchesAccess(request.RefreshToken, identity) != nil {
+				writeDesktopAuthResponse(c, http.StatusConflict, false, "AUTH_SESSION_MISMATCH", "Session credentials do not match", nil)
+				return
+			}
 		}
 	}
 	if err := service.RevokeDesktopByRefreshTokenStrict(request.RefreshToken, request.SID, "desktop_logout"); err != nil {

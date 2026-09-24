@@ -73,6 +73,49 @@ func TestRedisIPRateLimiterThresholdTTLAndNamespace(t *testing.T) {
 	assert.True(t, redisServer.Exists(legacyKey), "the v2 counter must not touch an old list key")
 }
 
+func TestDesktopAuthRateLimitReturnsStructuredError(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	useRateLimitMiniRedis(t)
+	previousEnabled := common.CriticalRateLimitEnable
+	previousNum := common.CriticalRateLimitNum
+	previousDuration := common.CriticalRateLimitDuration
+	common.CriticalRateLimitEnable = true
+	common.CriticalRateLimitNum = 1
+	common.CriticalRateLimitDuration = 31
+	t.Cleanup(func() {
+		common.CriticalRateLimitEnable = previousEnabled
+		common.CriticalRateLimitNum = previousNum
+		common.CriticalRateLimitDuration = previousDuration
+	})
+
+	router := gin.New()
+	require.NoError(t, router.SetTrustedProxies(nil))
+	router.POST("/api/desktop/auth/login", DesktopAuthRateLimit(), func(c *gin.Context) {
+		c.Status(http.StatusNoContent)
+	})
+	request := func() *httptest.ResponseRecorder {
+		recorder := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodPost, "/api/desktop/auth/login", nil)
+		req.RemoteAddr = "192.0.2.11:12345"
+		router.ServeHTTP(recorder, req)
+		return recorder
+	}
+	assert.Equal(t, http.StatusNoContent, request().Code)
+	limited := request()
+	assert.Equal(t, http.StatusTooManyRequests, limited.Code)
+	assert.Equal(t, "31", limited.Header().Get("Retry-After"))
+	var response struct {
+		Success    bool   `json:"success"`
+		Code       string `json:"code"`
+		RequestID  string `json:"request_id"`
+		ServerTime int64  `json:"server_time"`
+	}
+	require.NoError(t, common.Unmarshal(limited.Body.Bytes(), &response))
+	assert.False(t, response.Success)
+	assert.Equal(t, "AUTH_RATE_LIMITED", response.Code)
+	assert.NotEmpty(t, response.RequestID)
+	assert.Positive(t, response.ServerTime)
+}
 func TestRedisUserRateLimiterUsesSharedFixedWindow(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	redisServer, _ := useRateLimitMiniRedis(t)

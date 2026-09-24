@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"strconv"
+	"time"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/logger"
@@ -178,6 +179,26 @@ func CriticalRateLimit() func(c *gin.Context) {
 	return defNext
 }
 
+func DesktopAuthRateLimit() func(c *gin.Context) {
+	if !common.CriticalRateLimitEnable {
+		return defNext
+	}
+	base := rateLimitFactory(common.CriticalRateLimitNum, common.CriticalRateLimitDuration, "desktop-auth")
+	return func(c *gin.Context) {
+		base(c)
+		if !c.IsAborted() || c.Writer.Status() != http.StatusTooManyRequests {
+			return
+		}
+		requestID := c.GetString(common.RequestIdKey)
+		if requestID == "" {
+			requestID = common.NewRequestId()
+		}
+		c.JSON(http.StatusTooManyRequests, gin.H{
+			"success": false, "code": "AUTH_RATE_LIMITED", "message": http.StatusText(http.StatusTooManyRequests),
+			"request_id": requestID, "server_time": time.Now().Unix(), "data": nil,
+		})
+	}
+}
 func UserCriticalRateLimit(scope string) func(c *gin.Context) {
 	if !common.CriticalRateLimitEnable {
 		return defNext
