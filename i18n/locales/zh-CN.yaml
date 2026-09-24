@@ -54,6 +54,10 @@ token.db_error: "无效的令牌，数据库查询出错，请联系管理员"
 token.auto_groups_too_many: "每个令牌最多可选择 {{.Max}} 个 Auto 分组"
 token.auto_groups_duplicate: "Auto 分组 {{.Group}} 重复"
 token.auto_groups_invalid: "Auto 分组 {{.Group}} 不可用或无权访问"
+token.idempotency_key_too_long: "幂等键过长"
+token.idempotency_key_required_desktop: "桌面会话必须提供幂等键"
+token.idempotency_conflict: "幂等键已被不同请求使用"
+token.user_token_limit_reached: "已达到最大令牌数量限制 ({{.Max}})"
 
 # Redemption messages
 redemption.name_length: "兑换码名称长度必须在1-20之间"

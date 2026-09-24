@@ -568,13 +568,58 @@ func TestDesktopTokenCreateRequiresIdempotencyKey(t *testing.T) {
 	assert.Contains(t, recorder.Body.String(), `"code":"INVALID_ARGUMENT"`)
 }
 func TestAddTokenLegacyResponseHasNoData(t *testing.T) {
-	setupTokenControllerTestDB(t)
+	db := setupTokenControllerTestDB(t)
+	seedTestUser(t, db, 1)
 	ctx, recorder := newAuthenticatedContext(t, http.MethodPost, "/api/token/", map[string]any{
 		"name": "legacy-web-key", "expired_time": -1, "unlimited_quota": true,
 	}, 1)
 	AddToken(ctx)
 	assert.Equal(t, http.StatusOK, recorder.Code)
 	assert.JSONEq(t, `{"success":true,"message":""}`, recorder.Body.String())
+}
+
+func TestAddTokenIdempotencyKeyTooLongReturns400(t *testing.T) {
+	setupTokenControllerTestDB(t)
+	ctx, recorder := newAuthenticatedContext(t, http.MethodPost, "/api/token/", map[string]any{
+		"name": "long-key", "expired_time": -1, "unlimited_quota": true,
+	}, 1)
+	ctx.Request.Header.Set("Idempotency-Key", strings.Repeat("a", maxIdempotencyKeyLength+1))
+	AddToken(ctx)
+	assert.Equal(t, http.StatusBadRequest, recorder.Code)
+	assert.Contains(t, recorder.Body.String(), `"code":"INVALID_ARGUMENT"`)
+}
+
+func TestAddTokenIdempotencyIsolatesByUser(t *testing.T) {
+	db := setupTokenControllerTestDB(t)
+	seedTestUser(t, db, 1)
+	seedTestUser(t, db, 2)
+
+	body := map[string]any{"name": "isolated-key", "expired_time": -1, "unlimited_quota": true}
+	create := func(userID int) *httptest.ResponseRecorder {
+		ctx, recorder := newAuthenticatedContext(t, http.MethodPost, "/api/token/", body, userID)
+		ctx.Request.Header.Set("Idempotency-Key", "shared-key-string")
+		AddToken(ctx)
+		return recorder
+	}
+	first := create(1)
+	second := create(2)
+	require.Equal(t, http.StatusOK, first.Code, first.Body.String())
+	require.Equal(t, http.StatusOK, second.Code, second.Body.String())
+
+	var firstResp, secondResp struct {
+		Data struct {
+			ID int `json:"id"`
+		} `json:"data"`
+	}
+	require.NoError(t, common.Unmarshal(first.Body.Bytes(), &firstResp))
+	require.NoError(t, common.Unmarshal(second.Body.Bytes(), &secondResp))
+	assert.NotEqual(t, firstResp.Data.ID, secondResp.Data.ID)
+
+	var tokenCount, recordCount int64
+	require.NoError(t, db.Model(&model.Token{}).Count(&tokenCount).Error)
+	require.NoError(t, db.Model(&model.TokenCreateIdempotency{}).Count(&recordCount).Error)
+	assert.EqualValues(t, 2, tokenCount)
+	assert.EqualValues(t, 2, recordCount)
 }
 func TestGetAllTokensMasksKeyInResponse(t *testing.T) {
 	db := setupTokenControllerTestDB(t)

@@ -11,10 +11,16 @@ import (
 
 const TokenCreateIdempotencyTTL = 24 * time.Hour
 
+const (
+	tokenCreateLockShards      = 256
+	maxIdempotentCreateRetries = 6
+	idempotentRetryBaseDelay   = 10 * time.Millisecond
+)
+
 var (
 	ErrTokenCreateIdempotencyConflict = errors.New("idempotency key was reused with a different request")
 	ErrUserTokenLimit                 = errors.New("user token limit reached")
-	tokenCreateLocks                  [256]sync.Mutex
+	tokenCreateLocks                  [tokenCreateLockShards]sync.Mutex
 )
 
 // TokenCreateIdempotency stores only digests and the created token identifier.
@@ -53,10 +59,17 @@ func loadTokenCreateReplay(tx *gorm.DB, userID int, route, keyHash, requestHash 
 		return nil, false, ErrTokenCreateIdempotencyConflict
 	}
 	var token Token
-	if err := tx.Unscoped().Where("id = ? AND user_id = ?", record.TokenID, userID).First(&token).Error; err != nil {
+	if err := tx.Where("id = ? AND user_id = ?", record.TokenID, userID).First(&token).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			// The token was soft-deleted after the idempotency record was written.
+			// Treat the record as stale: remove it and let the caller create fresh.
+			if delErr := tx.Delete(&record).Error; delErr != nil {
+				return nil, false, delErr
+			}
+			return nil, false, nil
+		}
 		return nil, false, err
 	}
-	token.DeletedAt = gorm.DeletedAt{}
 	return &token, true, nil
 }
 
@@ -68,15 +81,24 @@ func isSQLiteBusy(err error) bool {
 	return strings.Contains(message, "sqlite_busy") || strings.Contains(message, "database is locked")
 }
 
+func isRetryableIdempotencyError(err error) bool {
+	return isSQLiteBusy(err) || errors.Is(err, gorm.ErrDuplicatedKey)
+}
+
 // CreateTokenIdempotent atomically inserts a token and its 24-hour idempotency
-// record. Per-user striping prevents same-process SQLite writers from racing;
-// bounded retries cover transient locks from other SQLite connections/processes.
+// record. Per-user striping prevents same-process writers from racing; bounded
+// retries cover transient SQLite locks and cross-instance unique-key races.
+//
+// Within a single process the striping mutex serializes same-user creators.
+// Across processes or instances the (user_id, route, key_hash) unique index is
+// the final arbiter: a losing transaction retries after the winner commits and
+// then replays its result from the database.
 func CreateTokenIdempotent(token *Token, route, keyHash, requestHash string, now int64, maxTokens int) (*Token, bool, error) {
 	lock := tokenCreateLock(token.UserId)
 	lock.Lock()
 	defer lock.Unlock()
 
-	for attempt := range 6 {
+	for attempt := range maxIdempotentCreateRetries {
 		token.Id = 0
 		var result *Token
 		var replayed bool
@@ -133,10 +155,13 @@ func CreateTokenIdempotent(token *Token, route, keyHash, requestHash string, now
 		if errors.Is(replayErr, ErrTokenCreateIdempotencyConflict) {
 			return nil, false, replayErr
 		}
-		if !isSQLiteBusy(err) || attempt == 5 {
+		if replayErr != nil {
+			return nil, false, replayErr
+		}
+		if !isRetryableIdempotencyError(err) || attempt == maxIdempotentCreateRetries-1 {
 			return nil, false, err
 		}
-		time.Sleep(10 * time.Millisecond * time.Duration(1<<attempt))
+		time.Sleep(idempotentRetryBaseDelay * time.Duration(1<<attempt))
 	}
 	return nil, false, errors.New("idempotent token creation retry exhausted")
 }

@@ -327,6 +327,7 @@ func TokenOrUserAuth() func(c *gin.Context) {
 				writeDashboardAuthError(c, errDesktopSessionForbidden)
 				return
 			}
+			c.Set(dashboardSessionClientTypeContextKey, session.ClientType)
 			setDashboardAuthContext(c, user, identity, false)
 			c.Next()
 			return

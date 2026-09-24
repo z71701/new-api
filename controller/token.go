@@ -284,6 +284,42 @@ func tokenCreateDigest(value string) string {
 	return hex.EncodeToString(digest[:])
 }
 
+const maxIdempotencyKeyLength = 128
+
+// tokenCreateHashInput is the explicit set of business fields that participate
+// in idempotency conflict detection. It must include every client-controlled
+// field that changes the meaning of "create this token"; server-generated
+// fields (Key, CreatedTime, AccessedTime) are intentionally omitted. AutoGroups
+// is included explicitly because model.Token.AutoGroups has json:"-" and would
+// otherwise be dropped from a direct Marshal.
+type tokenCreateHashInput struct {
+	Name               string  `json:"name"`
+	ExpiredTime        int64   `json:"expired_time"`
+	RemainQuota        int     `json:"remain_quota"`
+	UnlimitedQuota     bool    `json:"unlimited_quota"`
+	ModelLimitsEnabled bool    `json:"model_limits_enabled"`
+	ModelLimits        string  `json:"model_limits"`
+	AllowIps           *string `json:"allow_ips"`
+	Group              string  `json:"group"`
+	CrossGroupRetry    bool    `json:"cross_group_retry"`
+	AutoGroups         string  `json:"auto_groups"`
+}
+
+func buildTokenCreateHashInput(t *model.Token) tokenCreateHashInput {
+	return tokenCreateHashInput{
+		Name:               t.Name,
+		ExpiredTime:        t.ExpiredTime,
+		RemainQuota:        t.RemainQuota,
+		UnlimitedQuota:     t.UnlimitedQuota,
+		ModelLimitsEnabled: t.ModelLimitsEnabled,
+		ModelLimits:        t.ModelLimits,
+		AllowIps:           t.AllowIps,
+		Group:              t.Group,
+		CrossGroupRetry:    t.CrossGroupRetry,
+		AutoGroups:         t.AutoGroups,
+	}
+}
+
 func AddToken(c *gin.Context) {
 	request := tokenRequest{}
 	if err := c.ShouldBindJSON(&request); err != nil {
@@ -314,12 +350,12 @@ func AddToken(c *gin.Context) {
 	}
 
 	idempotencyKey := strings.TrimSpace(c.GetHeader("Idempotency-Key"))
-	if len(idempotencyKey) > 128 {
-		c.JSON(http.StatusBadRequest, gin.H{"success": false, "code": "INVALID_ARGUMENT", "message": "Idempotency-Key is too long"})
+	if len(idempotencyKey) > maxIdempotencyKeyLength {
+		c.JSON(http.StatusBadRequest, gin.H{"success": false, "code": "INVALID_ARGUMENT", "message": common.TranslateMessage(c, i18n.MsgTokenIdempotencyKeyTooLong)})
 		return
 	}
 	if middleware.IsDesktopSession(c) && idempotencyKey == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"success": false, "code": "INVALID_ARGUMENT", "message": "Idempotency-Key is required for desktop sessions"})
+		c.JSON(http.StatusBadRequest, gin.H{"success": false, "code": "INVALID_ARGUMENT", "message": common.TranslateMessage(c, i18n.MsgTokenIdempotencyKeyRequired)})
 		return
 	}
 	maxTokens := operation_setting.GetMaxUserTokens()
@@ -351,7 +387,7 @@ func AddToken(c *gin.Context) {
 			return
 		}
 		if int(count) >= maxTokens {
-			c.JSON(http.StatusOK, gin.H{"success": false, "message": fmt.Sprintf("已达到最大令牌数量限制 (%d)", maxTokens)})
+			c.JSON(http.StatusOK, gin.H{"success": false, "message": common.TranslateMessage(c, i18n.MsgTokenUserLimitReached, map[string]any{"Max": maxTokens})})
 			return
 		}
 		if err := cleanToken.Insert(); err != nil {
@@ -363,11 +399,7 @@ func AddToken(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{"success": true, "message": ""})
 		return
 	}
-	hashInput := cleanToken
-	hashInput.Key = ""
-	hashInput.CreatedTime = 0
-	hashInput.AccessedTime = 0
-	requestPayload, err := common.Marshal(hashInput)
+	requestPayload, err := common.Marshal(buildTokenCreateHashInput(&cleanToken))
 	if err != nil {
 		common.ApiError(c, err)
 		return
@@ -376,11 +408,11 @@ func AddToken(c *gin.Context) {
 		&cleanToken, c.FullPath(), tokenCreateDigest(idempotencyKey), tokenCreateDigest(string(requestPayload)), now, maxTokens,
 	)
 	if errors.Is(err, model.ErrTokenCreateIdempotencyConflict) {
-		c.JSON(http.StatusConflict, gin.H{"success": false, "code": "IDEMPOTENCY_CONFLICT", "message": "Idempotency-Key was already used with a different request"})
+		c.JSON(http.StatusConflict, gin.H{"success": false, "code": "IDEMPOTENCY_CONFLICT", "message": common.TranslateMessage(c, i18n.MsgTokenIdempotencyConflict)})
 		return
 	}
 	if errors.Is(err, model.ErrUserTokenLimit) {
-		c.JSON(http.StatusOK, gin.H{"success": false, "message": fmt.Sprintf("已达到最大令牌数量限制 (%d)", maxTokens)})
+		c.JSON(http.StatusOK, gin.H{"success": false, "message": common.TranslateMessage(c, i18n.MsgTokenUserLimitReached, map[string]any{"Max": maxTokens})})
 		return
 	}
 	if err != nil {
