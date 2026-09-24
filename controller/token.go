@@ -1,6 +1,9 @@
 package controller
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
+	"errors"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -9,6 +12,7 @@ import (
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/i18n"
+	"github.com/QuantumNous/new-api/middleware"
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/service"
 	"github.com/QuantumNous/new-api/setting"
@@ -275,21 +279,28 @@ func GetTokenUsage(c *gin.Context) {
 	})
 }
 
+func tokenCreateDigest(value string) string {
+	digest := sha256.Sum256([]byte(value))
+	return hex.EncodeToString(digest[:])
+}
+
 func AddToken(c *gin.Context) {
 	request := tokenRequest{}
-	err := c.ShouldBindJSON(&request)
-	if err != nil {
+	if err := c.ShouldBindJSON(&request); err != nil {
 		common.ApiError(c, err)
 		return
 	}
 	token := request.Token
+	if strings.TrimSpace(token.Name) == "" {
+		common.ApiErrorI18n(c, i18n.MsgNameCannotBeEmpty)
+		return
+	}
 	if len(token.Name) > 50 {
 		common.ApiErrorI18n(c, i18n.MsgTokenNameTooLong)
 		return
 	}
 	params := tokenAuditParams(c)
 	params["name"] = token.Name
-	// 非无限额度时，检查额度值是否超出有效范围
 	if !token.UnlimitedQuota {
 		if token.RemainQuota < 0 {
 			common.ApiErrorI18n(c, i18n.MsgTokenQuotaNegative)
@@ -301,20 +312,17 @@ func AddToken(c *gin.Context) {
 			return
 		}
 	}
-	// 检查用户令牌数量是否已达上限
+
+	idempotencyKey := strings.TrimSpace(c.GetHeader("Idempotency-Key"))
+	if len(idempotencyKey) > 128 {
+		c.JSON(http.StatusBadRequest, gin.H{"success": false, "code": "INVALID_ARGUMENT", "message": "Idempotency-Key is too long"})
+		return
+	}
+	if middleware.IsDesktopSession(c) && idempotencyKey == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"success": false, "code": "INVALID_ARGUMENT", "message": "Idempotency-Key is required for desktop sessions"})
+		return
+	}
 	maxTokens := operation_setting.GetMaxUserTokens()
-	count, err := model.CountUserTokens(c.GetInt("id"))
-	if err != nil {
-		common.ApiError(c, err)
-		return
-	}
-	if int(count) >= maxTokens {
-		c.JSON(http.StatusOK, gin.H{
-			"success": false,
-			"message": fmt.Sprintf("已达到最大令牌数量限制 (%d)", maxTokens),
-		})
-		return
-	}
 	if token.Group == "auto" {
 		if !setTokenAutoGroups(c, &token, request.AutoGroups.Groups) {
 			return
@@ -329,32 +337,62 @@ func AddToken(c *gin.Context) {
 		common.SysLog("failed to generate token key: " + err.Error())
 		return
 	}
+	now := common.GetTimestamp()
 	cleanToken := model.Token{
-		UserId:             c.GetInt("id"),
-		Name:               token.Name,
-		Key:                key,
-		CreatedTime:        common.GetTimestamp(),
-		AccessedTime:       common.GetTimestamp(),
-		ExpiredTime:        token.ExpiredTime,
-		RemainQuota:        token.RemainQuota,
-		UnlimitedQuota:     token.UnlimitedQuota,
-		ModelLimitsEnabled: token.ModelLimitsEnabled,
-		ModelLimits:        token.ModelLimits,
-		AllowIps:           token.AllowIps,
-		Group:              token.Group,
-		CrossGroupRetry:    token.CrossGroupRetry,
-		AutoGroups:         token.AutoGroups,
+		UserId: c.GetInt("id"), Name: token.Name, Key: key, CreatedTime: now, AccessedTime: now,
+		ExpiredTime: token.ExpiredTime, RemainQuota: token.RemainQuota, UnlimitedQuota: token.UnlimitedQuota,
+		ModelLimitsEnabled: token.ModelLimitsEnabled, ModelLimits: token.ModelLimits, AllowIps: token.AllowIps,
+		Group: token.Group, CrossGroupRetry: token.CrossGroupRetry, AutoGroups: token.AutoGroups,
 	}
-	err = cleanToken.Insert()
+	if idempotencyKey == "" {
+		count, err := model.CountUserTokens(cleanToken.UserId)
+		if err != nil {
+			common.ApiError(c, err)
+			return
+		}
+		if int(count) >= maxTokens {
+			c.JSON(http.StatusOK, gin.H{"success": false, "message": fmt.Sprintf("已达到最大令牌数量限制 (%d)", maxTokens)})
+			return
+		}
+		if err := cleanToken.Insert(); err != nil {
+			common.ApiError(c, err)
+			return
+		}
+		params["id"] = cleanToken.Id
+		common.SetContextKey(c, constant.ContextKeyTokenAuditSucceeded, true)
+		c.JSON(http.StatusOK, gin.H{"success": true, "message": ""})
+		return
+	}
+	hashInput := cleanToken
+	hashInput.Key = ""
+	hashInput.CreatedTime = 0
+	hashInput.AccessedTime = 0
+	requestPayload, err := common.Marshal(hashInput)
 	if err != nil {
 		common.ApiError(c, err)
 		return
 	}
-	params["id"] = cleanToken.Id
+	created, _, err := model.CreateTokenIdempotent(
+		&cleanToken, c.FullPath(), tokenCreateDigest(idempotencyKey), tokenCreateDigest(string(requestPayload)), now, maxTokens,
+	)
+	if errors.Is(err, model.ErrTokenCreateIdempotencyConflict) {
+		c.JSON(http.StatusConflict, gin.H{"success": false, "code": "IDEMPOTENCY_CONFLICT", "message": "Idempotency-Key was already used with a different request"})
+		return
+	}
+	if errors.Is(err, model.ErrUserTokenLimit) {
+		c.JSON(http.StatusOK, gin.H{"success": false, "message": fmt.Sprintf("已达到最大令牌数量限制 (%d)", maxTokens)})
+		return
+	}
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	params["id"] = created.Id
 	common.SetContextKey(c, constant.ContextKeyTokenAuditSucceeded, true)
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,
 		"message": "",
+		"data":    gin.H{"id": created.Id, "token": buildMaskedTokenResponse(created)},
 	})
 }
 

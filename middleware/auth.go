@@ -23,7 +23,10 @@ import (
 	"gorm.io/gorm"
 )
 
-const authIdentityContextKey = "auth_identity"
+const (
+	authIdentityContextKey               = "auth_identity"
+	dashboardSessionClientTypeContextKey = "dashboard_session_client_type"
+)
 
 var errDesktopSessionForbidden = errors.New("desktop session is not allowed to access this route")
 
@@ -141,6 +144,11 @@ func RootAuth() func(c *gin.Context) {
 	}
 }
 
+// IsDesktopSession reports whether UserAuth authenticated a live desktop session.
+func IsDesktopSession(c *gin.Context) bool {
+	return c.GetString(dashboardSessionClientTypeContextKey) == model.UserSessionClientDesktop
+}
+
 // GetAuthIdentity returns a dashboard session identity. PAT-authenticated
 // requests intentionally have no SessionID and cannot manage browser sessions.
 func GetAuthIdentity(c *gin.Context) (service.AuthIdentity, bool) {
@@ -198,6 +206,7 @@ func classifyDashboardCredential(c *gin.Context) (*model.UserBase, service.AuthI
 		if session.ClientType == model.UserSessionClientDesktop && !desktopSessionRouteAllowed(c.Request.Method, c.FullPath()) {
 			return nil, service.AuthIdentity{}, dashboardCredentialInternal, errDesktopSessionForbidden
 		}
+		c.Set(dashboardSessionClientTypeContextKey, session.ClientType)
 		return user, identity, dashboardCredentialInternal, nil
 	}
 	patUser, err := model.ValidateAccessToken(raw)
