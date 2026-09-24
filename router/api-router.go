@@ -70,6 +70,15 @@ func SetApiRouter(router *gin.Engine) {
 		apiRouter.GET("/verify/methods", middleware.UserAuth(), middleware.DisableCache(), controller.GetVerificationMethods)
 		apiRouter.POST("/verify", middleware.UserAuth(), middleware.CriticalRateLimit(), middleware.UserCriticalRateLimit("security-verification"), middleware.DisableCache(), controller.UniversalVerify)
 
+		desktopAuthRoute := apiRouter.Group("/desktop/auth")
+		desktopAuthRoute.Use(middleware.CriticalRateLimit(), middleware.DisableCache(), anonymousRequestBodyLimit)
+		{
+			desktopAuthRoute.POST("/login", controller.DesktopLogin)
+			desktopAuthRoute.POST("/verify", controller.DesktopVerify)
+			desktopAuthRoute.POST("/refresh", controller.DesktopRefresh)
+			desktopAuthRoute.POST("/logout", controller.DesktopLogout)
+		}
+
 		userRoute := apiRouter.Group("/user")
 		{
 			userRoute.POST("/auth/refresh", middleware.SessionCookieOriginGuard(), middleware.CriticalRateLimit(), middleware.DisableCache(), controller.RefreshAuth)

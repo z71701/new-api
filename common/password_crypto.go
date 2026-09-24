@@ -19,7 +19,10 @@ import (
 
 const passwordEncryptionKeyBits = 2048
 
-var ErrPasswordEncryptionInvalid = errors.New("password encryption payload is invalid")
+var (
+	ErrPasswordEncryptionInvalid  = errors.New("password encryption payload is invalid")
+	ErrPasswordEncryptionKeyStale = errors.New("password encryption key is stale")
+)
 
 var passwordEncryptionState struct {
 	sync.RWMutex
@@ -104,9 +107,19 @@ func DecryptPassword(ciphertextBase64 string, keyID string) (string, error) {
 	privateKey := passwordEncryptionState.privateKey
 	activeKeyID := passwordEncryptionState.keyID
 	passwordEncryptionState.RUnlock()
-	if privateKey == nil || keyID == "" || keyID != activeKeyID {
+	if privateKey == nil || keyID == "" {
 		return "", ErrPasswordEncryptionInvalid
 	}
+	if len(keyID) != 32 {
+		return "", ErrPasswordEncryptionInvalid
+	}
+	if _, err := hex.DecodeString(keyID); err != nil {
+		return "", ErrPasswordEncryptionInvalid
+	}
+	if !strings.EqualFold(keyID, activeKeyID) {
+		return "", ErrPasswordEncryptionKeyStale
+	}
+	keyID = activeKeyID
 	if strings.HasPrefix(ciphertextBase64, "v2.") {
 		if len(ciphertextBase64) > 4096 {
 			return "", ErrPasswordEncryptionInvalid

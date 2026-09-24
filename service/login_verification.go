@@ -177,6 +177,22 @@ func VerifyLoginCode(token, code, ip, userAgent string) (*AuthBundle, *LegacyGit
 	return CompleteLoginVerification(token, verification, VerificationMethodTwoFA, ip, userAgent)
 }
 
+func VerifyDesktopLoginCode(token, code, ip, userAgent string) (*AuthBundle, error) {
+	verification, err := RequireDesktopLoginVerification(token, VerificationMethodTwoFA)
+	if err != nil {
+		return nil, err
+	}
+	twoFA, err := model.GetTwoFAByUserId(verification.State.UserID)
+	if err != nil {
+		return nil, err
+	}
+	if err := VerifyTwoFactorCode(twoFA, code); err != nil {
+		return nil, err
+	}
+	bundle, _, err := CompleteLoginVerification(token, verification, VerificationMethodTwoFA, ip, userAgent)
+	return bundle, err
+}
+
 // CompleteLoginVerification must only run after a concrete factor ceremony.
 // Recheck the bound version and method while consuming the flow and creating the
 // session atomically; a different request cannot reuse this authorization. The
