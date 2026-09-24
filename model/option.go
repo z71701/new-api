@@ -208,6 +208,15 @@ func loadOptionsFromDatabase() {
 	passkeyOptions := make(map[string]string)
 	for _, option := range options {
 		if IsPasskeyDomainOption(option.Key) {
+			if option.Key == "ServerAddress" {
+				normalized, err := system_setting.NormalizeServerAddress(option.Value, common.DebugEnabled)
+				if err != nil {
+					common.SysError("invalid ServerAddress ignored: " + err.Error())
+					passkeyOptions[option.Key] = ""
+					continue
+				}
+				option.Value = normalized
+			}
 			passkeyOptions[option.Key] = option.Value
 			continue
 		}
@@ -228,6 +237,10 @@ func SyncOptions(frequency int) {
 }
 
 func validateOptionValue(key string, value string) error {
+	if key == "ServerAddress" {
+		_, err := system_setting.NormalizeServerAddress(value, common.DebugEnabled)
+		return err
+	}
 	if err := operation_setting.ValidateQuotaOption(key, value); err != nil {
 		return err
 	}
