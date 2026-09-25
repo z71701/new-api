@@ -214,13 +214,15 @@ func TestDesktopAcceptanceSessionAbsoluteExpiry(t *testing.T) {
 	require.NoError(t, model.DB.Model(&model.UserSession{}).Where("sid = ?", bundle.Session.SID).
 		Update("expires_at", past).Error)
 
-	// Refresh must reject the expired session (mapped as revoked/inactive).
+	// Refresh must reject the absolutely-expired session. The session row is
+	// still active and was never revoked, so this must surface as
+	// AUTH_SESSION_EXPIRED (not AUTH_SESSION_REVOKED).
 	refreshBody, err := common.Marshal(desktopRefreshRequest{RefreshToken: bundle.RefreshToken, SID: bundle.Session.SID})
 	require.NoError(t, err)
 	refresh := securityEnrollmentRequest(http.MethodPost, "/api/desktop/auth/refresh", string(refreshBody), "", service.AuthIdentity{}, DesktopRefresh)
 	assert.Equal(t, http.StatusUnauthorized, refresh.Code)
 	refreshParsed := decodeDesktopAcceptanceResponse(t, refresh)
-	assert.Contains(t, []string{"AUTH_SESSION_EXPIRED", "AUTH_SESSION_REVOKED"}, refreshParsed.Code)
+	assert.Equal(t, "AUTH_SESSION_EXPIRED", refreshParsed.Code)
 
 	// Logout on an expired session is a no-op success (idempotent cleanup).
 	logoutBody, err := common.Marshal(desktopRefreshRequest{RefreshToken: bundle.RefreshToken, SID: bundle.Session.SID})
@@ -264,17 +266,15 @@ func TestDesktopAcceptanceTOTPLockoutAfterConsecutiveFailures(t *testing.T) {
 	require.NotNil(t, twoFA.LockedUntil, "locked_until must be set after %d failures", common.MaxFailAttempts)
 	assert.True(t, twoFA.LockedUntil.After(time.Now()), "locked_until must be in the future")
 
-	// Even the correct code is now rejected while locked. The verification
-	// policy marks TOTP as unavailable once TwoFALocked is set, so the response
-	// surfaces as 403 AUTH_VERIFICATION_UNSUPPORTED rather than 401.
+	// Even the correct code is now rejected while locked. A locked-but-enrolled
+	// TOTP factor is a verification failure, so the response is 401
+	// AUTH_VERIFICATION_FAILED (not 403 AUTH_VERIFICATION_UNSUPPORTED).
 	correctCode, err := totp.GenerateCode(secret, time.Now())
 	require.NoError(t, err)
 	lockedResp := desktopVerifyCode(t, flowToken, correctCode)
-	require.NotEqual(t, http.StatusOK, lockedResp.Code, "correct code must not succeed while locked")
+	require.Equal(t, http.StatusUnauthorized, lockedResp.Code, lockedResp.Body.String())
 	lockedParsed := decodeDesktopAcceptanceResponse(t, lockedResp)
-	assert.Contains(t,
-		[]string{"AUTH_VERIFICATION_FAILED", "AUTH_VERIFICATION_UNSUPPORTED"},
-		lockedParsed.Code, "correct code must be rejected while locked")
+	assert.Equal(t, "AUTH_VERIFICATION_FAILED", lockedParsed.Code, "correct code must be rejected while locked")
 }
 
 // TestDesktopAcceptanceTOTPLockoutCorrectCodeRejected is focused: after the
@@ -293,11 +293,9 @@ func TestDesktopAcceptanceTOTPLockoutCorrectCodeRejected(t *testing.T) {
 	correctCode, err := totp.GenerateCode(secret, time.Now())
 	require.NoError(t, err)
 	resp := desktopVerifyCode(t, flowToken, correctCode)
-	require.NotEqual(t, http.StatusOK, resp.Code, resp.Body.String())
+	require.Equal(t, http.StatusUnauthorized, resp.Code, resp.Body.String())
 	parsed := decodeDesktopAcceptanceResponse(t, resp)
-	assert.Contains(t,
-		[]string{"AUTH_VERIFICATION_FAILED", "AUTH_VERIFICATION_UNSUPPORTED"},
-		parsed.Code)
+	assert.Equal(t, "AUTH_VERIFICATION_FAILED", parsed.Code)
 
 	// No session should have been created for the user.
 	var sessionCount int64

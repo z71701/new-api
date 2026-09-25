@@ -1,6 +1,8 @@
 package controller
 
 import (
+	"bytes"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -9,6 +11,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/QuantumNous/new-api/common"
+	"github.com/santhosh-tekuri/jsonschema/v5"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"gopkg.in/yaml.v3"
@@ -163,17 +167,11 @@ func authSessionErrorStatuses(t *testing.T, serviceSource string) map[int]bool {
 	return out
 }
 
-// loadExample resolves components/examples/<name> and returns its `value` object.
-func loadExample(t *testing.T, examples map[string]any, name string) map[string]any {
-	t.Helper()
-	e, ok := examples[name].(map[string]any)
-	require.True(t, ok, "components/examples must define %q", name)
-	require.NotEmpty(t, e["summary"], "example %q must declare a summary", name)
-	v, ok := e["value"].(map[string]any)
-	require.True(t, ok, "example %q must have an object `value`", name)
-	return v
-}
-
+// TestDesktopAuthOpenAPIDrift validates that docs/desktop-auth-openapi.yaml is
+// in lock-step with the Go implementation: paths, reachable status codes,
+// envelope shapes, the login discriminator, error-code coverage and (below)
+// that every named example actually validates against the response schema that
+// declares it.
 func TestDesktopAuthOpenAPIDrift(t *testing.T) {
 	root := repoRoot(t)
 	specBytes := readRepoFile(t, root, "docs/desktop-auth-openapi.yaml")
@@ -304,8 +302,12 @@ func TestDesktopAuthOpenAPIDrift(t *testing.T) {
 	assert.Contains(t, mapping, "true", "discriminator must map true -> challenge")
 	assert.Contains(t, mapping, "false", "discriminator must map false -> success")
 
-	// 5. Schema fixture validation: load every named example and assert the
-	//    data/contract structure the desktop client relies on.
+	// 5. Schema fixture validation: compile each documented response's content
+	//    schema with a real JSON Schema (draft 2020-12) validator and validate
+	//    every named example value against the schema of the response that
+	//    declares it. This covers $ref resolution, allOf, oneOf (login's
+	//    require_verification discriminator), required, type, const, enum and
+	//    format — replacing the previous hand-written field asserts.
 	expectedExamples := []string{
 		"login_success", "login_totp_challenge",
 		"totp_verify_success", "totp_verify_failed",
@@ -319,79 +321,73 @@ func TestDesktopAuthOpenAPIDrift(t *testing.T) {
 		require.True(t, ok, "components/examples missing named example %q", name)
 	}
 
-	// login_success: bundle shape.
-	succ := loadExample(t, examples, "login_success")
-	assert.Equal(t, "OK", asString(t, succ["code"]))
-	assert.True(t, asBool(t, succ["success"]))
-	succData := asMap(t, succ["data"])
-	assert.Contains(t, succData, "access_token")
-	assert.Contains(t, succData, "refresh_token")
-	assert.Equal(t, "desktop", asString(t, asMap(t, succData["session"])["client_type"]),
-		"login session must be a desktop session")
-	assert.NotEmpty(t, asString(t, asMap(t, succData["user"])["id"]), "login success must carry user.id")
-
-	// login_totp_challenge: challenge shape.
-	chal := loadExample(t, examples, "login_totp_challenge")
-	assert.Equal(t, "AUTH_VERIFICATION_REQUIRED", asString(t, chal["code"]))
-	chalData := asMap(t, chal["data"])
-	assert.True(t, asBool(t, chalData["require_verification"]), "challenge must set require_verification=true")
-	assert.NotEmpty(t, asString(t, chalData["flow_token"]), "challenge must carry flow_token")
-	methods := asSlice(t, chalData["methods"])
-	hasTOTP := false
-	for _, m := range methods {
-		if asString(t, m) == "totp" {
-			hasTOTP = true
+	// Map each named example to the JSON pointer (inside the OpenAPI document)
+	// of the response content schema it is declared under. A named example only
+	// validates in the context of the response that references it.
+	pointerToken := func(s string) string {
+		return strings.ReplaceAll(strings.ReplaceAll(s, "~", "~0"), "/", "~1")
+	}
+	exampleSchemaPtr := map[string]string{}
+	for path, entry := range paths {
+		entryMap := asMap(t, entry)
+		for _, method := range []string{"get", "post"} {
+			op, ok := entryMap[method].(map[string]any)
+			if !ok {
+				continue
+			}
+			for code, resp := range asMap(t, op["responses"]) {
+				respMap := asMap(t, resp)
+				content, ok := respMap["content"].(map[string]any)
+				if !ok {
+					continue
+				}
+				appJSON, ok := content["application/json"].(map[string]any)
+				if !ok {
+					continue
+				}
+				named, ok := appJSON["examples"].(map[string]any)
+				if !ok {
+					continue
+				}
+				for exName, exVal := range named {
+					target := exName
+					if ref, ok := exVal.(map[string]any)["$ref"].(string); ok {
+						target = strings.TrimPrefix(ref, "#/components/examples/")
+					}
+					exampleSchemaPtr[target] = "/paths/" + pointerToken(path) + "/" + method +
+						"/responses/" + code + "/content/application~1json/schema"
+				}
+			}
 		}
 	}
-	assert.True(t, hasTOTP, "challenge methods must include totp")
 
-	// totp_verify_success: bundle issued after 2FA.
-	vSucc := loadExample(t, examples, "totp_verify_success")
-	assert.Equal(t, "OK", asString(t, vSucc["code"]))
-	assert.NotEmpty(t, asString(t, asMap(t, vSucc["data"])["refresh_token"]))
+	// Register the whole spec as one JSON-Schema resource so relative $refs
+	// (#/components/schemas/X) resolve. The compiler decodes with UseNumber;
+	// decode a parallel copy the same way so instance numbers are json.Number
+	// (matching the resource) rather than float64.
+	docJSONBytes, err := common.Marshal(doc)
+	require.NoError(t, err)
+	compiler := jsonschema.NewCompiler()
+	require.NoError(t, compiler.AddResource("openapi.yaml", bytes.NewReader(docJSONBytes)))
 
-	// totp_verify_failed: 401 error envelope.
-	vFail := loadExample(t, examples, "totp_verify_failed")
-	assert.False(t, asBool(t, vFail["success"]))
-	assert.Equal(t, "AUTH_VERIFICATION_FAILED", asString(t, vFail["code"]))
+	dec := json.NewDecoder(bytes.NewReader(docJSONBytes))
+	dec.UseNumber()
+	var docJSONRoot any
+	require.NoError(t, dec.Decode(&docJSONRoot))
+	docJSON := asMap(t, docJSONRoot)
+	jsonExamples := asMap(t, asMap(t, docJSON["components"])["examples"])
 
-	// refresh_rotation: a NEW refresh_token is returned.
-	rot := loadExample(t, examples, "refresh_rotation")
-	assert.Equal(t, "OK", asString(t, rot["code"]))
-	rotRT := asString(t, asMap(t, rot["data"])["refresh_token"])
-	assert.NotEmpty(t, rotRT, "rotation must return a fresh refresh_token")
+	for _, name := range expectedExamples {
+		ptr, ok := exampleSchemaPtr[name]
+		require.True(t, ok, "named example %q is not referenced from any documented response", name)
+		sch, err := compiler.Compile("openapi.yaml#" + ptr)
+		require.NoError(t, err, "compiling response schema for example %q", name)
 
-	// refresh_30s_retry: in-window replay returns the same bundle (still 200 OK).
-	retry := loadExample(t, examples, "refresh_30s_retry")
-	assert.Equal(t, "OK", asString(t, retry["code"]))
-	assert.Equal(t, rotRT, asString(t, asMap(t, retry["data"])["refresh_token"]),
-		"in-window replay must return the same bundle")
-
-	// refresh_out_of_window_replay: 401 AUTH_SESSION_REVOKED.
-	oo := loadExample(t, examples, "refresh_out_of_window_replay")
-	assert.False(t, asBool(t, oo["success"]))
-	assert.Equal(t, "AUTH_SESSION_REVOKED", asString(t, oo["code"]))
-
-	// logout_success / logout_duplicate: idempotent {logged_out:true}.
-	for _, name := range []string{"logout_success", "logout_duplicate"} {
-		lo := loadExample(t, examples, name)
-		assert.Equal(t, "OK", asString(t, lo["code"]))
-		assert.True(t, asBool(t, asMap(t, lo["data"])["logged_out"]),
-			"%s must return data.logged_out=true", name)
+		value := asMap(t, jsonExamples[name])["value"]
+		require.NotNil(t, value, "example %q must declare an object value", name)
+		require.NoError(t, sch.Validate(value), "example %q failed schema validation", name)
+		t.Logf("example %-28s PASS -> %s", name, ptr)
 	}
-
-	// logout_random_token: 401 AUTH_UNAUTHORIZED.
-	lrand := loadExample(t, examples, "logout_random_token")
-	assert.False(t, asBool(t, lrand["success"]))
-	assert.Equal(t, "AUTH_UNAUTHORIZED", asString(t, lrand["code"]))
-
-	// rate_limited_429 / internal_error_5xx: error envelopes.
-	rl := loadExample(t, examples, "rate_limited_429")
-	assert.False(t, asBool(t, rl["success"]))
-	assert.Equal(t, "AUTH_RATE_LIMITED", asString(t, rl["code"]))
-	ie := loadExample(t, examples, "internal_error_5xx")
-	assert.False(t, asBool(t, ie["success"]))
-	assert.Equal(t, "AUTH_INTERNAL_ERROR", asString(t, ie["code"]))
 
 	// 6. Error-code coverage: every code string the spec actually uses must be a
 	//    known code, and every known code must appear somewhere (example value or

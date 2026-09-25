@@ -89,7 +89,38 @@
 | 测试账号未创建（普通 / TOTP / 限流 / 锁定） | 全部 | `<BLOCKED | filled>` | 管理员按第 2 章创建并把口令置入保密台账 |
 | MySQL / PostgreSQL 远端 CI 验证待执行 | REFRESH / LOGOUT 落库路径 | `<PENDING>` | 在真实 MySQL>=5.7.8、PostgreSQL>=9.6 实例上跑迁移与会话轮换回归（SQLite 单跑不算完成） |
 
-## 6. 签名
+## 6. 待冻结/阻塞错误码
+
+> 本节逐项登记桌面端认证契约中出现的错误码及其当前实现状态。**已冻结** = 由 `controller/desktop_auth.go` + `service/auth_session.go` 的 handler 实际产生，且已被 `controller/desktop_auth_openapi_test.go` 的 knownAuthCodes 漂移测试锁定；**待冻结** = 尚未由任何 handler 产生，属于部署/网关层约定，在冻结前不得被当作 handler 契约依赖。
+
+| 错误码 | 主状态码 | 含义 | 实现状态 |
+| --- | --- | --- | --- |
+| `OK` | 200 | 成功 | 已冻结（handler 产生） |
+| `INVALID_ARGUMENT` | 400 | 请求字段缺失/非法 | 已冻结（handler 产生） |
+| `AUTH_PASSWORD_LOGIN_DISABLED` | 403 | 管理员关闭密码登录 | 已冻结（handler 产生） |
+| `AUTH_CAPTCHA_REQUIRED` | 403 | 开启 Turnstile 但缺 `captcha_token` | 已冻结（handler 产生） |
+| `AUTH_CAPTCHA_INVALID` | 400 | Cloudflare 拒绝 token | 已冻结（handler 产生） |
+| `AUTH_CAPTCHA_UNAVAILABLE` | 503 | siteverify 网络错误或 5xx | 已冻结（handler 产生） |
+| `AUTH_ENCRYPTION_PAYLOAD_INVALID` | 400 | RSA-OAEP+AES-GCM 密文非法 | 已冻结（handler 产生） |
+| `AUTH_ENCRYPTION_KEY_STALE` | 409 | `kid` 与服务端当前公钥不匹配 | 已冻结（handler 产生） |
+| `AUTH_INVALID_CREDENTIALS` | 401 | 密码错误 / 用户不存在（统一错误） | 已冻结（handler 产生） |
+| `AUTH_VERIFICATION_UNSUPPORTED` | 403 | 请求的二次因子系统未配置或被禁用（注意：TOTP 已配置但被临时锁定不属于此项） | 已冻结（handler 产生） |
+| `AUTH_VERIFICATION_REQUIRED` | 200 | 登录需二次验证（challenge） | 已冻结（handler 产生） |
+| `AUTH_FLOW_EXPIRED` | 401/409 | challenge 过期、已消费或不存在 | 已冻结（handler 产生） |
+| `AUTH_VERIFICATION_FAILED` | 401 | 错误 TOTP 码，或 TOTP 已配置但处于锁定窗口 | 已冻结（handler 产生） |
+| `AUTH_SESSION_LIMIT` | 409 | 用户会话数超限 | 已冻结（handler 产生） |
+| `AUTH_SESSION_ISSUANCE_LIMIT` | 409 | 会话签发限流 | 已冻结（handler 产生） |
+| `AUTH_SESSION_MISMATCH` | 409 | access token 与 refresh token 不匹配 | 已冻结（handler 产生） |
+| `AUTH_REFRESH_RACE` | 409 | 并发刷新竞争 | 已冻结（handler 产生） |
+| `AUTH_TOKEN_EXPIRED` | 401 | access token 过期 | 已冻结（handler 产生） |
+| `AUTH_SESSION_EXPIRED` | 401 | session 超过绝对 TTL（7 天），且未被吊销 | 已冻结（handler 产生） |
+| `AUTH_SESSION_REVOKED` | 401 | session 被吊销、不存在或被登出 | 已冻结（handler 产生） |
+| `AUTH_UNAUTHORIZED` | 401 | 伪造/非法 refresh_token 或 access token | 已冻结（handler 产生） |
+| `AUTH_RATE_LIMITED` | 429 | 触发 `DesktopAuthRateLimit` | 已冻结（handler/中间件产生） |
+| `AUTH_INTERNAL_ERROR` | 500 | 内部错误兜底 | 已冻结（handler 产生） |
+| `SERVICE_UNAVAILABLE` | 503 | 服务整体不可用 | **待冻结：当前 main 未实现，任何 handler 都不产生该 code；它属于部署/网关层（负载均衡、熔断、5xx 兜底）约定，OpenAPI 中仅以可选 503 响应标注，冻结前不得被客户端当作后端 handler 契约断言** |
+
+## 7. 签名
 
 | 角色 | 姓名 | 日期 |
 | --- | --- | --- |

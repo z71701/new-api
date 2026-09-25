@@ -332,6 +332,18 @@ func refreshLoginSession(rawRefreshToken, expectedSID, clientType, ip, userAgent
 	session, err := model.GetUserSessionCached(sid)
 	if err != nil {
 		if errors.Is(err, model.ErrUserSessionInactive) {
+			// The active-only cache collapses every inactive reason — revoked,
+			// missing, and absolute expiry — into ErrUserSessionInactive. A session
+			// that lapsed past its absolute ExpiresAt while still active must surface
+			// as AUTH_SESSION_EXPIRED, so the client can tell "please re-login after
+			// the 7-day TTL" apart from "your session was revoked". Re-read the row
+			// directly, bypassing the active-only cache filter, to distinguish them.
+			if fresh, dbErr := model.GetUserSessionBySID(sid); dbErr == nil {
+				now := time.Now().Unix()
+				if fresh.Status == model.UserSessionStatusActive && fresh.RevokedAt == 0 && fresh.ExpiresAt <= now {
+					return nil, nil, ErrLoginSessionInvalid
+				}
+			}
 			return nil, nil, ErrLoginSessionRevoked
 		}
 		return nil, nil, ErrRefreshTokenInvalid

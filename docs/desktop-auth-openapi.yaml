@@ -310,7 +310,13 @@ paths:
                 internal_error_5xx:
                   $ref: "#/components/examples/internal_error_5xx"
         "503":
-          description: Turnstile verification service unreachable (`AUTH_CAPTCHA_UNAVAILABLE`).
+          description: |
+            Turnstile verification service unreachable (`AUTH_CAPTCHA_UNAVAILABLE`,
+            emitted by this handler). Separately, the deployment/edge gateway MAY
+            return 503 with `code: SERVICE_UNAVAILABLE` when the service is down;
+            that code is NOT emitted by any current handler and is a pending
+            deployment-layer contract (see `x-status`).
+          x-status: pending-gateway-layer
           content:
             application/json:
               schema: { $ref: "#/components/schemas/ErrorResponse" }
@@ -430,6 +436,24 @@ paths:
                 request_id: "01J8XQ4N9XA0Y5Z6U7V8B9C0D1E2"
                 server_time: 1730000060
                 data: null
+        "503":
+          description: |
+            Optional deployment/gateway-layer response only. The edge gateway or
+            circuit breaker MAY return 503 with `code: SERVICE_UNAVAILABLE` when
+            the service is down. No current verify handler emits this code; it is
+            a pending deployment-layer contract and must not be asserted as backend
+            behavior.
+          x-status: pending-gateway-layer
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+              example:
+                success: false
+                code: "SERVICE_UNAVAILABLE"
+                message: "Service temporarily unavailable"
+                request_id: ""
+                server_time: 0
+                data: null
   /api/desktop/auth/refresh:
     post:
       tags: [Desktop Auth]
@@ -533,6 +557,24 @@ paths:
                 request_id: "01J8XQ5P0YB1Z6A8W9X0C1D2E3F4"
                 server_time: 1730003600
                 data: null
+        "503":
+          description: |
+            Optional deployment/gateway-layer response only. The edge gateway or
+            circuit breaker MAY return 503 with `code: SERVICE_UNAVAILABLE` when
+            the service is down. No current refresh handler emits this code; it is
+            a pending deployment-layer contract and must not be asserted as backend
+            behavior.
+          x-status: pending-gateway-layer
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+              example:
+                success: false
+                code: "SERVICE_UNAVAILABLE"
+                message: "Service temporarily unavailable"
+                request_id: ""
+                server_time: 0
+                data: null
   /api/desktop/auth/logout:
     post:
       tags: [Desktop Auth]
@@ -632,6 +674,24 @@ paths:
                 message: "Internal Server Error"
                 request_id: "01J8XQ6Q2ZC2A7B0Y1Z2D3E4F5A6"
                 server_time: 1730004000
+                data: null
+        "503":
+          description: |
+            Optional deployment/gateway-layer response only. The edge gateway or
+            circuit breaker MAY return 503 with `code: SERVICE_UNAVAILABLE` when
+            the service is down. No current logout handler emits this code; it is
+            a pending deployment-layer contract and must not be asserted as backend
+            behavior.
+          x-status: pending-gateway-layer
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+              example:
+                success: false
+                code: "SERVICE_UNAVAILABLE"
+                message: "Service temporarily unavailable"
+                request_id: ""
+                server_time: 0
                 data: null
 components:
   securitySchemes:

@@ -1,7 +1,6 @@
 package controller
 
 import (
-	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -9,6 +8,7 @@ import (
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/middleware"
+	"github.com/QuantumNous/new-api/service"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -27,23 +27,78 @@ func newDesktopAuthTestEngine(t *testing.T) *httptest.Server {
 	return httptest.NewServer(engine)
 }
 
+// newTurnstileMockServer stands in for Cloudflare's siteverify endpoint. The
+// caller controls the response status and body; the handler never inspects the
+// submitted token.
+func newTurnstileMockServer(t *testing.T, status int, body string) *httptest.Server {
+	t.Helper()
+	mux := http.NewServeMux()
+	mux.HandleFunc("/turnstile/v0/siteverify", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(status)
+		_, _ = w.Write([]byte(body))
+	})
+	server := httptest.NewServer(mux)
+	t.Cleanup(server.Close)
+	return server
+}
+
+// turnstileMockRoundTripper redirects the Turnstile siteverify POST at
+// https://challenges.cloudflare.com to an in-process mock server and passes
+// every other request through the original transport.
+type turnstileMockRoundTripper struct {
+	next     http.RoundTripper
+	mockBase string
+}
+
+func (r *turnstileMockRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
+	if req.URL.Host != "challenges.cloudflare.com" {
+		next := r.next
+		if next == nil {
+			next = http.DefaultTransport
+		}
+		return next.RoundTrip(req)
+	}
+	forward := req.Clone(req.Context())
+	forward.URL.Scheme = "http"
+	forward.URL.Host = strings.TrimPrefix(r.mockBase, "http://")
+	forward.Host = ""
+	return http.DefaultTransport.RoundTrip(forward)
+}
+
+// swapTurnstileTransport points the production Turnstile HTTP client at the
+// in-process mock siteverify server and restores the original transport on
+// cleanup. It patches whichever client middleware.ValidateTurnstileToken
+// actually dials (service.GetHttpClient(), falling back to http.DefaultClient),
+// mirroring the production selection. It mutates a process-global transport, so
+// callers must not run these tests in parallel.
+func swapTurnstileTransport(t *testing.T, mockBase string) {
+	t.Helper()
+	client := service.GetHttpClient()
+	if client == nil {
+		client = http.DefaultClient
+	}
+	original := client.Transport
+	client.Transport = &turnstileMockRoundTripper{next: original, mockBase: mockBase}
+	t.Cleanup(func() { client.Transport = original })
+}
+
 // TestDesktopAcceptanceRouterCaptchaInvalid exercises the real HTTP path: a
-// rejected Turnstile token must surface as 400 AUTH_CAPTCHA_INVALID.
+// rejected Turnstile token (siteverify returns success:false) must surface as
+// 400 AUTH_CAPTCHA_INVALID.
 func TestDesktopAcceptanceRouterCaptchaInvalid(t *testing.T) {
 	setupDesktopAuthAcceptanceTest(t)
 	common.CriticalRateLimitEnable = false
 	common.TurnstileCheckEnabled = true
 
-	restore := middleware.SetTurnstileVerifierForTest(func(response, remoteIP string) error {
-		return middleware.ErrTurnstileRejected
-	})
-	t.Cleanup(restore)
+	server := newTurnstileMockServer(t, http.StatusOK, `{"success":false,"error-codes":["invalid-input-response"]}`)
+	swapTurnstileTransport(t, server.URL)
 
-	server := newDesktopAuthTestEngine(t)
-	defer server.Close()
+	httpServer := newDesktopAuthTestEngine(t)
+	defer httpServer.Close()
 
 	body := desktopAcceptanceLoginBody(t, map[string]any{"captcha_token": "provided-token"})
-	resp, err := http.Post(server.URL+"/api/desktop/auth/login", "application/json", strings.NewReader(body))
+	resp, err := http.Post(httpServer.URL+"/api/desktop/auth/login", "application/json", strings.NewReader(body))
 	require.NoError(t, err)
 	defer resp.Body.Close()
 
@@ -57,60 +112,55 @@ func TestDesktopAcceptanceRouterCaptchaInvalid(t *testing.T) {
 }
 
 // TestDesktopAcceptanceRouterCaptchaUnavailable exercises the real HTTP path: a
-// Turnstile network/transport failure must surface as 503 AUTH_CAPTCHA_UNAVAILABLE.
+// siteverify 5xx response must surface as 503 AUTH_CAPTCHA_UNAVAILABLE.
 func TestDesktopAcceptanceRouterCaptchaUnavailable(t *testing.T) {
 	setupDesktopAuthAcceptanceTest(t)
 	common.CriticalRateLimitEnable = false
 	common.TurnstileCheckEnabled = true
 
-	networkErr := errors.New("dial tcp challenges.cloudflare.com: connect: connection refused")
-	restore := middleware.SetTurnstileVerifierForTest(func(response, remoteIP string) error {
-		return networkErr
-	})
-	t.Cleanup(restore)
+	server := newTurnstileMockServer(t, http.StatusInternalServerError, `{"success":false}`)
+	swapTurnstileTransport(t, server.URL)
 
-	server := newDesktopAuthTestEngine(t)
-	defer server.Close()
+	httpServer := newDesktopAuthTestEngine(t)
+	defer httpServer.Close()
 
 	body := desktopAcceptanceLoginBody(t, map[string]any{"captcha_token": "provided-token"})
-	resp, err := http.Post(server.URL+"/api/desktop/auth/login", "application/json", strings.NewReader(body))
+	resp, err := http.Post(httpServer.URL+"/api/desktop/auth/login", "application/json", strings.NewReader(body))
 	require.NoError(t, err)
 	defer resp.Body.Close()
 
 	assert.Equal(t, http.StatusServiceUnavailable, resp.StatusCode)
 	recorder := httptest.NewRecorder()
 	recorder.Code = resp.StatusCode
-	recorder.Body.ReadFrom(resp.Body)
+	_, _ = recorder.Body.ReadFrom(resp.Body)
 	parsed := decodeDesktopAcceptanceResponse(t, recorder)
 	assert.False(t, parsed.Success)
 	assert.Equal(t, "AUTH_CAPTCHA_UNAVAILABLE", parsed.Code)
 }
 
 // TestDesktopAcceptanceRouterCaptchaPassesThenLoginSucceeds exercises the real
-// HTTP path: when the Turnstile verifier returns nil, the login proceeds and
-// returns a 200 OK bundle.
+// HTTP path: when siteverify returns success:true, the captcha check passes and
+// the login proceeds to issue a 200 OK bundle.
 func TestDesktopAcceptanceRouterCaptchaPassesThenLoginSucceeds(t *testing.T) {
 	setupDesktopAuthAcceptanceTest(t)
 	common.CriticalRateLimitEnable = false
 	common.TurnstileCheckEnabled = true
 
-	restore := middleware.SetTurnstileVerifierForTest(func(response, remoteIP string) error {
-		return nil
-	})
-	t.Cleanup(restore)
+	server := newTurnstileMockServer(t, http.StatusOK, `{"success":true}`)
+	swapTurnstileTransport(t, server.URL)
 
-	server := newDesktopAuthTestEngine(t)
-	defer server.Close()
+	httpServer := newDesktopAuthTestEngine(t)
+	defer httpServer.Close()
 
 	body := desktopAcceptanceLoginBody(t, map[string]any{"captcha_token": "valid-token"})
-	resp, err := http.Post(server.URL+"/api/desktop/auth/login", "application/json", strings.NewReader(body))
+	resp, err := http.Post(httpServer.URL+"/api/desktop/auth/login", "application/json", strings.NewReader(body))
 	require.NoError(t, err)
 	defer resp.Body.Close()
 
 	require.Equal(t, http.StatusOK, resp.StatusCode)
 	recorder := httptest.NewRecorder()
 	recorder.Code = resp.StatusCode
-	recorder.Body.ReadFrom(resp.Body)
+	_, _ = recorder.Body.ReadFrom(resp.Body)
 	parsed := decodeDesktopAcceptanceResponse(t, recorder)
 	assert.True(t, parsed.Success)
 	assert.Equal(t, "OK", parsed.Code)
