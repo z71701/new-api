@@ -2,8 +2,8 @@ package controller
 
 import (
 	"bytes"
-	"encoding/json"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -107,6 +107,33 @@ func asBool(t *testing.T, v any) bool {
 	b, ok := v.(bool)
 	require.True(t, ok, "expected a YAML bool, got %T", v)
 	return b
+}
+
+// normalizeNumbers recursively converts whole-number float64 values to int64 so
+// that JSON Schema "type: integer" validation accepts them. common.Unmarshal
+// decodes all JSON numbers as float64; the jsonschema compiler decodes its
+// resources with UseNumber, so the instance side must present integers as an
+// integer Go type. This does not call any encoding/json decode API.
+func normalizeNumbers(v any) any {
+	switch val := v.(type) {
+	case map[string]any:
+		for k, item := range val {
+			val[k] = normalizeNumbers(item)
+		}
+		return val
+	case []any:
+		for i, item := range val {
+			val[i] = normalizeNumbers(item)
+		}
+		return val
+	case float64:
+		if !math.IsInf(val, 0) && val >= math.MinInt64 && val <= math.MaxInt64 && val == float64(int64(val)) {
+			return int64(val)
+		}
+		return val
+	default:
+		return v
+	}
 }
 
 func repoRoot(t *testing.T) string {
@@ -363,17 +390,16 @@ func TestDesktopAuthOpenAPIDrift(t *testing.T) {
 
 	// Register the whole spec as one JSON-Schema resource so relative $refs
 	// (#/components/schemas/X) resolve. The compiler decodes with UseNumber;
-	// decode a parallel copy the same way so instance numbers are json.Number
-	// (matching the resource) rather than float64.
+	// decode a parallel copy via common.Unmarshal and normalize whole-number
+	// float64 values to int64 so integer schema types validate correctly.
 	docJSONBytes, err := common.Marshal(doc)
 	require.NoError(t, err)
 	compiler := jsonschema.NewCompiler()
 	require.NoError(t, compiler.AddResource("openapi.yaml", bytes.NewReader(docJSONBytes)))
 
-	dec := json.NewDecoder(bytes.NewReader(docJSONBytes))
-	dec.UseNumber()
 	var docJSONRoot any
-	require.NoError(t, dec.Decode(&docJSONRoot))
+	require.NoError(t, common.Unmarshal(docJSONBytes, &docJSONRoot))
+	docJSONRoot = normalizeNumbers(docJSONRoot)
 	docJSON := asMap(t, docJSONRoot)
 	jsonExamples := asMap(t, asMap(t, docJSON["components"])["examples"])
 
