@@ -48,6 +48,26 @@ English template: `.github/PULL_REQUEST_TEMPLATE/en.md`
 
 > 以下为 ALIAI 跨仓治理检查清单，与上游模板并存。合并/部署前必须按此执行。
 
+### PR Kind（v1.1，必选其一）
+- [ ] **feature candidate**（功能 PR，status target=candidate，禁止填 merge SHA）
+- [ ] **post-merge status**（merge agent 创建，填真实 merge SHA，target=implemented）
+- [ ] **post-build-or-acceptance**（构建/验收结果，target=verified/accepted/released）
+- [ ] **deploy candidate**（部署计划，target=candidate/implemented，仅 planned digest）
+- [ ] **post-deploy result**（部署结果，target=deployed/rolled_back，需 evidence）
+
+### Lifecycle Target
+current_state: _____ → target_state: _____
+
+### Trigger Paths（v1.1）
+- [ ] 本 PR 命中 trigger_paths（业务代码/配置变更：controller/service/model/middleware/router/docs/openapi/docs/*contract*/testdata/e2e）
+- [ ] `docs/status.yml` 已更新
+- [ ] `docs/STATUS.md` marker 已更新（`<!-- status-sync: state=... source_commit=... updated_at=... -->`）
+
+### 声明（v1.1）
+- [ ] feature candidate：我确认 `docs/status.yml` 中未填写 merge SHA，source_commit 为本分支 HEAD
+- [ ] merge agent：合并后将创建 post-merge follow-up PR 填入真实 merge SHA
+- [ ] Tag / 部署 / 回滚需人工明确授权，本 PR 不执行
+
 ### Change type
 - [ ] feature / bugfix
 - [ ] **contract_change** (API, schema, error codes, handoff format)

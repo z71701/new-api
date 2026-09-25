@@ -32,3 +32,6 @@ downstream_actions:
     required: false
 blockers:
   - "Roadmap PR-D (Manifest/Dashboard) not started; distinct from merged pr-d-desktop-e2e-acceptance branch"
+# v1.1 lifecycle fields (v1.0 fields above preserved for compatibility)
+lifecycle_state: "released"
+evidence_phase: "post_build"

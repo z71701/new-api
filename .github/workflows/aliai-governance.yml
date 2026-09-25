@@ -1,13 +1,7 @@
 name: aliai-governance
 on:
   pull_request:
-    paths:
-      - "docs/STATUS.md"
-      - "docs/handoffs/**"
-      - ".github/aliai-governance.yml"
-      - ".github/PULL_REQUEST_TEMPLATE.md"
-      - "scripts/aliai_validate.py"
-      - ".github/workflows/aliai-governance.yml"
+    branches: [main]
   push:
     branches: [main]
 jobs:
@@ -15,12 +9,21 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
       - name: Install PyYAML
         run: pip install pyyaml
-      - name: Validate governance
+      - name: Validate governance (PR mode)
+        if: github.event_name == 'pull_request'
+        run: |
+          python scripts/aliai_validate.py . \
+            --base ${{ github.event.pull_request.base.sha }} \
+            --head ${{ github.event.pull_request.head.sha }}
+      - name: Validate governance (push main mode)
+        if: github.event_name == 'push'
         run: python scripts/aliai_validate.py .
       - name: Validator self-test
         run: python scripts/aliai_validate.py --self-test
