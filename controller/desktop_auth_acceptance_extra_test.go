@@ -303,6 +303,48 @@ func TestDesktopAcceptanceTOTPLockoutCorrectCodeRejected(t *testing.T) {
 	assert.Equal(t, int64(0), sessionCount, "locked correct code must not create a session")
 }
 
+// TestDesktopAcceptanceTOTPLockoutFreshLoginReturns401 verifies the login-
+// issuance step: after a TOTP-enrolled user enters a lockout window, a fresh
+// POST /login with the correct password (no flow_token) must return 401
+// AUTH_VERIFICATION_FAILED, not 403 AUTH_VERIFICATION_UNSUPPORTED. This
+// aligns startLoginVerification with requireLoginVerificationMethod.
+func TestDesktopAcceptanceTOTPLockoutFreshLoginReturns401(t *testing.T) {
+	user := setupDesktopAuthAcceptanceTest(t)
+	secret := seedDesktopTOTP(t, user)
+	flowToken := desktopAcceptanceChallenge(t, user)
+
+	// Trigger lockout via the verify endpoint (5 wrong codes).
+	for range common.MaxFailAttempts {
+		resp := desktopVerifyCode(t, flowToken, "000000")
+		require.Equal(t, http.StatusUnauthorized, resp.Code, resp.Body.String())
+	}
+	twoFA, err := model.GetTwoFAByUserId(user.Id)
+	require.NoError(t, err)
+	require.NotNil(t, twoFA.LockedUntil, "account must be locked after %d failures", common.MaxFailAttempts)
+
+	// Fresh login with correct password: login-issuance step must return 401
+	// AUTH_VERIFICATION_FAILED (not 403 AUTH_VERIFICATION_UNSUPPORTED).
+	freshLogin := loginDesktopAcceptance(t, nil)
+	require.Equal(t, http.StatusUnauthorized, freshLogin.Code, freshLogin.Body.String())
+	parsed := decodeDesktopAcceptanceResponse(t, freshLogin)
+	assert.False(t, parsed.Success)
+	assert.Equal(t, "AUTH_VERIFICATION_FAILED", parsed.Code,
+		"locked TOTP at login-issuance must be AUTH_VERIFICATION_FAILED, not UNSUPPORTED")
+	assert.NotEmpty(t, parsed.RequestID, "unified envelope must carry request_id")
+	assert.NotZero(t, parsed.ServerTime, "unified envelope must carry server_time")
+	assert.Equal(t, "no-store", freshLogin.Header().Get("Cache-Control"),
+		"401 response must include Cache-Control: no-store")
+
+	// Existing behaviour preserved: correct TOTP code via verify is still
+	// rejected while the lockout window is active.
+	correctCode, err := totp.GenerateCode(secret, time.Now())
+	require.NoError(t, err)
+	verifyResp := desktopVerifyCode(t, flowToken, correctCode)
+	require.Equal(t, http.StatusUnauthorized, verifyResp.Code, verifyResp.Body.String())
+	verifyParsed := decodeDesktopAcceptanceResponse(t, verifyResp)
+	assert.Equal(t, "AUTH_VERIFICATION_FAILED", verifyParsed.Code)
+}
+
 // ---------------------------------------------------------------------------
 // E. Desktop/Web auth-flow cross-exchange
 // ---------------------------------------------------------------------------
