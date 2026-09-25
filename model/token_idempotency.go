@@ -18,9 +18,10 @@ const (
 )
 
 var (
-	ErrTokenCreateIdempotencyConflict = errors.New("idempotency key was reused with a different request")
-	ErrUserTokenLimit                 = errors.New("user token limit reached")
-	tokenCreateLocks                  [tokenCreateLockShards]sync.Mutex
+	ErrTokenCreateIdempotencyConflict        = errors.New("idempotency key was reused with a different request")
+	ErrTokenCreateIdempotencyResourceDeleted = errors.New("idempotency record points to a deleted token")
+	ErrUserTokenLimit                        = errors.New("user token limit reached")
+	tokenCreateLocks                         [tokenCreateLockShards]sync.Mutex
 )
 
 // TokenCreateIdempotency stores only digests and the created token identifier.
@@ -40,9 +41,25 @@ func tokenCreateLock(userID int) *sync.Mutex {
 	return &tokenCreateLocks[uint(userID)%uint(len(tokenCreateLocks))]
 }
 
-func loadTokenCreateReplay(tx *gorm.DB, userID int, route, keyHash, requestHash string, now int64) (*Token, bool, error) {
+// loadTokenCreateReplay resolves an existing idempotent token creation.
+//
+// When locked is true the idempotency record row is read with SELECT ... FOR
+// UPDATE (a no-op on SQLite). This must be used only after the per-user owner
+// lock is held, so a concurrent winner's committed row is visible as a current
+// read instead of a stale REPEATABLE READ snapshot.
+//
+// If the record points at a token that no longer exists (hard delete) or that
+// was soft-deleted, the record is intentionally left in place and
+// ErrTokenCreateIdempotencyResourceDeleted is returned. Silently deleting the
+// record and minting a brand-new credential would let a delayed retry of an
+// already-revoked request issue a fresh valid token.
+func loadTokenCreateReplay(tx *gorm.DB, userID int, route, keyHash, requestHash string, now int64, locked bool) (*Token, bool, error) {
+	recordQuery := tx.Where("user_id = ? AND route = ? AND key_hash = ?", userID, route, keyHash)
+	if locked {
+		recordQuery = lockForUpdate(recordQuery)
+	}
 	var record TokenCreateIdempotency
-	err := tx.Where("user_id = ? AND route = ? AND key_hash = ?", userID, route, keyHash).First(&record).Error
+	err := recordQuery.First(&record).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return nil, false, nil
 	}
@@ -58,17 +75,18 @@ func loadTokenCreateReplay(tx *gorm.DB, userID int, route, keyHash, requestHash 
 	if record.RequestHash != requestHash {
 		return nil, false, ErrTokenCreateIdempotencyConflict
 	}
+	// Unscoped so soft-deleted tokens are still visible: we must distinguish a
+	// live replay from a deleted-credential case rather than collapsing both to
+	// "record missing".
 	var token Token
-	if err := tx.Where("id = ? AND user_id = ?", record.TokenID, userID).First(&token).Error; err != nil {
+	if err := tx.Unscoped().Where("id = ? AND user_id = ?", record.TokenID, userID).First(&token).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
-			// The token was soft-deleted after the idempotency record was written.
-			// Treat the record as stale: remove it and let the caller create fresh.
-			if delErr := tx.Delete(&record).Error; delErr != nil {
-				return nil, false, delErr
-			}
-			return nil, false, nil
+			return nil, false, ErrTokenCreateIdempotencyResourceDeleted
 		}
 		return nil, false, err
+	}
+	if token.DeletedAt.Valid {
+		return nil, false, ErrTokenCreateIdempotencyResourceDeleted
 	}
 	return &token, true, nil
 }
@@ -81,8 +99,23 @@ func isSQLiteBusy(err error) bool {
 	return strings.Contains(message, "sqlite_busy") || strings.Contains(message, "database is locked")
 }
 
+// isSerializableConflict reports database-level deadlocks / serialization
+// failures (MySQL error 1213 SQLSTATE 40001, PostgreSQL serialization errors).
+// These are expected under concurrent writers and must be retried; the retry
+// loop then replays the winner's committed idempotency record.
+func isSerializableConflict(err error) bool {
+	if err == nil {
+		return false
+	}
+	message := strings.ToLower(err.Error())
+	return strings.Contains(message, "deadlock found when trying to get lock") ||
+		strings.Contains(message, "try restarting transaction") ||
+		strings.Contains(message, "40001") ||
+		strings.Contains(message, "could not serialize access")
+}
+
 func isRetryableIdempotencyError(err error) bool {
-	return isSQLiteBusy(err) || errors.Is(err, gorm.ErrDuplicatedKey)
+	return isSQLiteBusy(err) || errors.Is(err, gorm.ErrDuplicatedKey) || isSerializableConflict(err)
 }
 
 // CreateTokenIdempotent atomically inserts a token and its 24-hour idempotency
@@ -106,7 +139,7 @@ func CreateTokenIdempotent(token *Token, route, keyHash, requestHash string, now
 			if err := tx.Where("user_id = ? AND expires_at <= ?", token.UserId, now).Delete(&TokenCreateIdempotency{}).Error; err != nil {
 				return err
 			}
-			existing, replay, err := loadTokenCreateReplay(tx, token.UserId, route, keyHash, requestHash, now)
+			existing, replay, err := loadTokenCreateReplay(tx, token.UserId, route, keyHash, requestHash, now, false)
 			if err != nil {
 				return err
 			}
@@ -119,11 +152,33 @@ func CreateTokenIdempotent(token *Token, route, keyHash, requestHash string, now
 			if err := lockForUpdate(tx).Select("id").Where("id = ?", token.UserId).First(&owner).Error; err != nil {
 				return err
 			}
-			var count int64
-			if err := tx.Model(&Token{}).Where("user_id = ?", token.UserId).Count(&count).Error; err != nil {
+
+			// Re-read the idempotency record with a current (locked) read now that
+			// the per-user owner lock is held. On Postgres READ COMMITTED a
+			// concurrent winner may have committed between the first read and this
+			// point; on MySQL REPEATABLE READ the earlier snapshot would otherwise
+			// keep hiding it until commit. The FOR UPDATE read sees the winner's
+			// row, and a replay/conflict here short-circuits before we count or
+			// create anything.
+			existing, replay, err = loadTokenCreateReplay(tx, token.UserId, route, keyHash, requestHash, now, true)
+			if err != nil {
 				return err
 			}
-			if int(count) >= maxTokens {
+			if replay {
+				result, replayed = existing, true
+				return nil
+			}
+
+			// Lock the user's token rows instead of using an aggregate COUNT. A
+			// plain COUNT under MySQL REPEATABLE READ reads the transaction
+			// snapshot, so waiting on the owner lock would not refresh it and
+			// could let two near-limit transactions both pass the check. SELECT
+			// id ... FOR UPDATE is a current read and serializes the two writers.
+			var tokenIDs []int
+			if err := lockForUpdate(tx).Model(&Token{}).Select("id").Where("user_id = ?", token.UserId).Find(&tokenIDs).Error; err != nil {
+				return err
+			}
+			if len(tokenIDs) >= maxTokens {
 				return ErrUserTokenLimit
 			}
 			if err := tx.Create(token).Error; err != nil {
@@ -142,13 +197,13 @@ func CreateTokenIdempotent(token *Token, route, keyHash, requestHash string, now
 		if err == nil {
 			return result, replayed, nil
 		}
-		if errors.Is(err, ErrTokenCreateIdempotencyConflict) || errors.Is(err, ErrUserTokenLimit) {
+		if errors.Is(err, ErrTokenCreateIdempotencyConflict) || errors.Is(err, ErrUserTokenLimit) || errors.Is(err, ErrTokenCreateIdempotencyResourceDeleted) {
 			return nil, false, err
 		}
 
 		// Another instance may have won the unique-key race. Read its committed
 		// result before treating the transaction error as a storage failure.
-		existing, replay, replayErr := loadTokenCreateReplay(DB, token.UserId, route, keyHash, requestHash, now)
+		existing, replay, replayErr := loadTokenCreateReplay(DB, token.UserId, route, keyHash, requestHash, now, false)
 		if replayErr == nil && replay {
 			return existing, true, nil
 		}

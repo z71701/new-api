@@ -621,6 +621,40 @@ func TestAddTokenIdempotencyIsolatesByUser(t *testing.T) {
 	assert.EqualValues(t, 2, tokenCount)
 	assert.EqualValues(t, 2, recordCount)
 }
+
+func TestAddTokenIdempotencyResourceDeletedReturns409(t *testing.T) {
+	db := setupTokenControllerTestDB(t)
+	seedTestUser(t, db, 11)
+	body := map[string]any{"name": "then-deleted", "expired_time": -1, "unlimited_quota": true}
+
+	create := func(idempotencyKey string, requestBody any) *httptest.ResponseRecorder {
+		ctx, recorder := newAuthenticatedContext(t, http.MethodPost, "/api/token/", requestBody, 11)
+		ctx.Request.Header.Set("Idempotency-Key", idempotencyKey)
+		AddToken(ctx)
+		return recorder
+	}
+
+	first := create("deleted-resource-key", body)
+	require.Equal(t, http.StatusOK, first.Code, first.Body.String())
+
+	// Soft-delete the created token directly.
+	require.NoError(t, db.Where("user_id = ?", 11).Delete(&model.Token{}).Error)
+
+	second := create("deleted-resource-key", body)
+	require.Equal(t, http.StatusConflict, second.Code, second.Body.String())
+	assert.Contains(t, second.Body.String(), `"code":"IDEMPOTENCY_RESOURCE_DELETED"`)
+
+	// No new token must be minted; the soft-deleted row and the idempotency
+	// record must both remain.
+	var liveTokens, allTokens, records int64
+	require.NoError(t, db.Model(&model.Token{}).Where("user_id = ?", 11).Count(&liveTokens).Error)
+	require.NoError(t, db.Model(&model.Token{}).Unscoped().Where("user_id = ?", 11).Count(&allTokens).Error)
+	require.NoError(t, db.Model(&model.TokenCreateIdempotency{}).Where("user_id = ?", 11).Count(&records).Error)
+	assert.Zero(t, liveTokens, "no live token should be created by the replay")
+	assert.EqualValues(t, 1, allTokens, "the soft-deleted token row must remain")
+	assert.EqualValues(t, 1, records, "the idempotency record must be retained")
+}
+
 func TestGetAllTokensMasksKeyInResponse(t *testing.T) {
 	db := setupTokenControllerTestDB(t)
 	token := seedToken(t, db, 1, "list-token", "abcd1234efgh5678")

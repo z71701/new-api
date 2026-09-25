@@ -149,7 +149,7 @@ func TestCreateTokenIdempotentConflictsDifferentBody(t *testing.T) {
 	assert.EqualValues(t, 1, tokenCount)
 }
 
-func TestCreateTokenIdempotentReplaySkipsSoftDeletedToken(t *testing.T) {
+func TestCreateTokenIdempotentSoftDeletedReturnsResourceDeleted(t *testing.T) {
 	db := openIdempotencyTestDB(t)
 	seedIdempotencyTestUser(t, db, 50)
 
@@ -157,15 +157,91 @@ func TestCreateTokenIdempotentReplaySkipsSoftDeletedToken(t *testing.T) {
 	first, _, err := CreateTokenIdempotent(newIdempotencyToken(50, "will-delete"), "/api/token/", "keyhash-deleted", "reqhash-d", now, 100)
 	require.NoError(t, err)
 
-	// Soft-delete the token
+	// Soft-delete the token, then replay the exact idempotent request. The
+	// response must be stable: the idempotency record is retained, no fresh
+	// credential is minted, and a second retry returns the same error.
 	require.NoError(t, db.Delete(&Token{}, first.Id).Error)
 
-	// Replay should detect the missing (soft-deleted) token, clean up the idempotency
-	// record, and create a fresh token instead of returning a deleted one.
-	second, replayed, err := CreateTokenIdempotent(newIdempotencyToken(50, "after-delete"), "/api/token/", "keyhash-deleted", "reqhash-d", now, 100)
+	for range 2 {
+		second, replayed, err := CreateTokenIdempotent(newIdempotencyToken(50, "after-delete"), "/api/token/", "keyhash-deleted", "reqhash-d", now, 100)
+		require.ErrorIs(t, err, ErrTokenCreateIdempotencyResourceDeleted)
+		assert.False(t, replayed)
+		assert.Nil(t, second)
+	}
+
+	var liveTokenCount, allTokenCount, recordCount int64
+	db.Model(&Token{}).Where("user_id = ?", 50).Count(&liveTokenCount)
+	db.Model(&Token{}).Unscoped().Where("user_id = ?", 50).Count(&allTokenCount)
+	db.Model(&TokenCreateIdempotency{}).Where("user_id = ?", 50).Count(&recordCount)
+	assert.Zero(t, liveTokenCount, "no live token should be created")
+	assert.EqualValues(t, 1, allTokenCount, "the soft-deleted row must remain")
+	assert.EqualValues(t, 1, recordCount, "idempotency record must be retained")
+}
+
+func TestCreateTokenIdempotentHardDeletedReturnsResourceDeleted(t *testing.T) {
+	db := openIdempotencyTestDB(t)
+	seedIdempotencyTestUser(t, db, 52)
+
+	now := time.Now().Unix()
+	created, _, err := CreateTokenIdempotent(newIdempotencyToken(52, "hard-deleted"), "/api/token/", "keyhash-hard", "reqhash-hard", now, 100)
 	require.NoError(t, err)
-	assert.False(t, replayed)
-	assert.NotEqual(t, first.Id, second.Id)
+
+	// Hard-delete the token row (Unscoped delete).
+	require.NoError(t, db.Unscoped().Delete(&Token{}, created.Id).Error)
+
+	_, _, err = CreateTokenIdempotent(newIdempotencyToken(52, "retry"), "/api/token/", "keyhash-hard", "reqhash-hard", now, 100)
+	require.ErrorIs(t, err, ErrTokenCreateIdempotencyResourceDeleted)
+
+	var tokenCount, recordCount int64
+	db.Model(&Token{}).Unscoped().Where("user_id = ?", 52).Count(&tokenCount)
+	db.Model(&TokenCreateIdempotency{}).Where("user_id = ?", 52).Count(&recordCount)
+	assert.Zero(t, tokenCount)
+	assert.EqualValues(t, 1, recordCount, "idempotency record is retained even when the token row is gone")
+}
+
+func TestCreateTokenIdempotentRecheckAfterLock(t *testing.T) {
+	db := openIdempotencyTestDB(t)
+	seedIdempotencyTestUser(t, db, 53)
+
+	now := time.Now().Unix()
+
+	// Directly exercise loadTokenCreateReplay with locked=true (the post-lock
+	// re-read path). SQLite has no FOR UPDATE, so locked is a no-op here but the
+	// code path and return contract are identical.
+	require.NoError(t, db.Transaction(func(tx *gorm.DB) error {
+		tok, replay, err := loadTokenCreateReplay(tx, 53, "/api/token/", "keyhash-recheck", "reqhash-recheck", now, true)
+		require.NoError(t, err)
+		assert.False(t, replay)
+		assert.Nil(t, tok)
+		return nil
+	}))
+
+	// Seed a live token + idempotency record, then the locked re-read must replay.
+	seeded := newIdempotencyToken(53, "seeded")
+	require.NoError(t, db.Create(seeded).Error)
+	require.NoError(t, db.Create(&TokenCreateIdempotency{
+		UserID: 53, Route: "/api/token/", KeyHash: "keyhash-recheck", RequestHash: "reqhash-recheck",
+		TokenID: seeded.Id, CreatedAt: now - 10, ExpiresAt: now + int64(TokenCreateIdempotencyTTL/time.Second),
+	}).Error)
+
+	require.NoError(t, db.Transaction(func(tx *gorm.DB) error {
+		tok, replay, err := loadTokenCreateReplay(tx, 53, "/api/token/", "keyhash-recheck", "reqhash-recheck", now, true)
+		require.NoError(t, err)
+		assert.True(t, replay)
+		require.NotNil(t, tok)
+		assert.Equal(t, seeded.Id, tok.Id)
+		return nil
+	}))
+
+	// After soft-deleting the token, the locked re-read must surface ResourceDeleted.
+	require.NoError(t, db.Delete(&Token{}, seeded.Id).Error)
+	require.NoError(t, db.Transaction(func(tx *gorm.DB) error {
+		tok, replay, err := loadTokenCreateReplay(tx, 53, "/api/token/", "keyhash-recheck", "reqhash-recheck", now, true)
+		require.ErrorIs(t, err, ErrTokenCreateIdempotencyResourceDeleted)
+		assert.False(t, replay)
+		assert.Nil(t, tok)
+		return nil
+	}))
 }
 
 func TestIsSQLiteBusyTable(t *testing.T) {

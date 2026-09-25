@@ -411,6 +411,14 @@ func AddToken(c *gin.Context) {
 		c.JSON(http.StatusConflict, gin.H{"success": false, "code": "IDEMPOTENCY_CONFLICT", "message": common.TranslateMessage(c, i18n.MsgTokenIdempotencyConflict)})
 		return
 	}
+	if errors.Is(err, model.ErrTokenCreateIdempotencyResourceDeleted) {
+		// The idempotent record points at a token that has since been deleted.
+		// Do not mint a fresh credential: surface a 409. This returns before
+		// params["id"] is set and before ContextKeyTokenAuditSucceeded is
+		// flipped on, so the audit log does not record the retry as a creation.
+		c.JSON(http.StatusConflict, gin.H{"success": false, "code": "IDEMPOTENCY_RESOURCE_DELETED", "message": common.TranslateMessage(c, i18n.MsgTokenIdempotencyResourceDeleted)})
+		return
+	}
 	if errors.Is(err, model.ErrUserTokenLimit) {
 		c.JSON(http.StatusOK, gin.H{"success": false, "message": common.TranslateMessage(c, i18n.MsgTokenUserLimitReached, map[string]any{"Max": maxTokens})})
 		return

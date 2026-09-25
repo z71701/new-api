@@ -56,6 +56,7 @@ token.auto_groups_invalid: "Auto group {{.Group}} is unavailable or unauthorized
 token.idempotency_key_too_long: "Idempotency-Key is too long"
 token.idempotency_key_required_desktop: "Idempotency-Key is required for desktop sessions"
 token.idempotency_conflict: "Idempotency-Key was already used with a different request"
+token.idempotency_resource_deleted: "The token created by this request was deleted; cannot replay idempotent creation"
 token.user_token_limit_reached: "Reached maximum token limit ({{.Max}})"
 
 # Redemption messages

@@ -57,6 +57,7 @@ token.auto_groups_invalid: "Auto 分組 {{.Group}} 不可用或無權存取"
 token.idempotency_key_too_long: "冪等鍵過長"
 token.idempotency_key_required_desktop: "桌面工作階段必須提供冪等鍵"
 token.idempotency_conflict: "冪等鍵已被不同請求使用"
+token.idempotency_resource_deleted: "該請求建立的權杖已被刪除，無法重放冪等建立"
 token.user_token_limit_reached: "已達到最大令牌數量限制 ({{.Max}})"
 
 # Redemption messages
