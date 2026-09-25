@@ -40,3 +40,35 @@ English template: `.github/PULL_REQUEST_TEMPLATE/en.md`
 - [ ] **范围聚焦:** 本 PR 为一项聚焦改动，未包含无关代码。
 - [ ] **本地验证:** 已按变更路径实际验证，并写明命令与观察结果。仅声明 `go build` 通过或测试通过，不视为有效证明。
 - [ ] **安全合规:** 代码中无敏感凭据，且符合项目代码规范。
+
+
+---
+
+## ALIAI cross-repo governance (fork overlay)
+
+> 以下为 ALIAI 跨仓治理检查清单，与上游模板并存。合并/部署前必须按此执行。
+
+### Change type
+- [ ] feature / bugfix
+- [ ] **contract_change** (API, schema, error codes, handoff format)
+- [ ] release / deploy / image digest
+- [ ] docs / status / governance
+- [ ] infra / CI
+
+### Contract & status (required for contract_change / release / deploy)
+- [ ] `docs/STATUS.md` updated with this repo's authoritative facts
+- [ ] If this changes a downstream-facing contract: a handoff YAML added under `docs/handoffs/` matching `schema_version: 1.0`
+- [ ] All cross-repo references are **fixed URL + commit SHA**, not live/dynamic state
+- [ ] Runtime switches (`password_login_encryption_enabled`, `turnstile_check`) reflected if relevant
+
+### Naming trap check
+- [ ] I confirm: branch/PR named `pr-d-desktop-e2e-acceptance` (E2E acceptance contract, PR #8) is **not** Roadmap PR-D (Manifest/Dashboard). This PR does not conflate them.
+
+### Verification
+- [ ] `python scripts/aliai_validate.py .` passes (or CI equivalent)
+- [ ] `git diff --check` passes
+- [ ] Secret scan: no tokens, local absolute paths, or production credentials in diff
+- [ ] Only intended files changed; no user uncommitted work touched
+
+### Merge / deploy agent note
+> Before merging or deploying, the merge/deploy agent **must invoke the `aliai-cross-repo-coordination` skill** to route downstream handoffs (backend->client+deploy, client->acceptance handoff, deploy->digest update+production verify). Cross-repo follow-ups must be independent PRs that preserve the source SHA. Do not merge this PR as a substitute for those downstream PRs.
