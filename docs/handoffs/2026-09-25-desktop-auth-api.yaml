@@ -1,0 +1,34 @@
+schema_version: "1.0"
+producer_repo: "z71701/new-api"
+producer_commit: "c1876ec91a814673ec30316da741fb6efa428ebe"
+artifact: "desktop-auth-api"
+version: "v1.0.0-rc.40.3"
+change_type: "contract_change"
+compatibility: "backward"
+summary: "Desktop auth four endpoints merged and deployed; Key idempotency & masking shipped."
+created_at: "2026-09-25"
+contract_refs:
+  - url: "https://github.com/z71701/new-api/blob/c1876ec91a814673ec30316da741fb6efa428ebe/docs/desktop-auth-openapi.yaml"
+    kind: "openapi-contract"
+  - url: "https://github.com/z71701/new-api/blob/c1876ec91a814673ec30316da741fb6efa428ebe/docs/desktop-auth-acceptance-checklist.md"
+    kind: "acceptance-checklist"
+tests:
+  - name: "desktop auth structured 400 on empty body"
+    status: "passed"
+    evidence_url: ""
+  - name: "desktop e2e acceptance contract"
+    status: "blocked"
+    evidence_url: ""
+runtime_switches:
+  password_login_enabled: true
+  password_login_encryption_enabled: false
+  turnstile_check: false
+downstream_actions:
+  - repo: "Yohalloo/aliai-desktop"
+    action: "consume contract at pinned commit; run integration acceptance"
+    required: true
+  - repo: "z71701/aliai-deploy"
+    action: "record image digest; no redeploy required"
+    required: false
+blockers:
+  - "Roadmap PR-D (Manifest/Dashboard) not started; distinct from merged pr-d-desktop-e2e-acceptance branch"

@@ -1,0 +1,26 @@
+# ALIAI cross-repo handoff — copy to docs/handoffs/<yyyy-mm-dd>-<slug>.yaml and fill in.
+# Schema: docs/handoffs/README.md. Validator: scripts/aliai_validate.py.
+schema_version: "1.0"
+producer_repo: "owner/repo"               # e.g. z71701/new-api
+producer_commit: "<full 40-char SHA>"     # the commit this handoff describes
+artifact: "desktop-auth-api"              # what is being handed off
+version: "v1.0.0-rc.40.3"                 # artifact version or tag
+change_type: "contract_change"            # feature | bugfix | contract_change | deprecation | release | docs | infra
+compatibility: "backward"                 # none | backward | breaking | conditional
+summary: "One-line human summary."
+created_at: "2026-09-25"
+contract_refs:                            # fixed URL+commit references, never dynamic state
+  - url: "https://github.com/z71701/new-api/blob/<sha>/docs/api/ALIAI_DESKTOP_CLIENT_API_CONTRACT.md"
+    kind: "api-contract"
+tests:
+  - name: "desktop auth e2e acceptance"
+    status: "passed"                      # passed | failed | blocked | not_run
+    evidence_url: ""
+runtime_switches:                         # only switches relevant to this artifact
+  password_login_encryption_enabled: false
+  turnstile_check: false
+downstream_actions:                       # what consumers must do
+  - repo: "Yohalloo/aliai-desktop"
+    action: "consume contract at pinned commit; run integration acceptance"
+    required: true
+blockers: []                              # list of strings, empty if none

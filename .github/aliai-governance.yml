@@ -1,0 +1,50 @@
+# ALIAI repository governance manifest. Machine-readable.
+# Consumed by scripts/aliai_validate.py and the aliai-cross-repo-coordination skill.
+schema_version: "1.0"
+project_skill: ".agents/skills/aliai-cross-repo-coordination/SKILL.md"
+repo:
+  name: "z71701/new-api"                   # this repo: backend
+  role: "backend"                          # backend | client | deploy
+  authoritative_fields:                     # what this repo is the single source of truth for
+    - "API / OpenAPI"
+    - "error codes"
+    - "runtime switches"
+    - "fixtures"
+    - "backend release status"
+status:
+  doc: "docs/STATUS.md"
+  last_verified_commit: "c1876ec91a814673ec30316da741fb6efa428ebe"  # origin/main HEAD at PR creation
+handoffs:
+  dir: "docs/handoffs"
+  readme: "docs/handoffs/README.md"
+  schema_version: "1.0"
+  required_fields:
+    - schema_version
+    - producer_repo
+    - producer_commit
+    - artifact
+    - version
+    - change_type
+    - compatibility
+    - contract_refs
+    - tests
+    - runtime_switches
+    - downstream_actions
+    - blockers
+pr_template: ".github/PULL_REQUEST_TEMPLATE.md"
+validator:
+  script: "scripts/aliai_validate.py"
+  ci_workflow: ".github/workflows/aliai-governance.yml"
+upstream_producers: []                     # this repo is the upstream producer; no upstream contract source
+downstream_consumers:
+  - repo: "Yohalloo/aliai-desktop"        # desktop client consumes this backend's API contract
+    handoff_expected: true
+  - repo: "z71701/aliai-deploy"            # deploy repo records image digest from this backend
+    handoff_expected: true
+cross_repo_rules:
+  declare_other_repo_dynamic_state: false # never state another repo's live status as fact
+  references_must_be_url_plus_commit: true
+  independent_pr_per_repo: true
+  preserve_source_sha: true
+naming_traps:
+  - note: "GitHub branch pr-d-desktop-e2e-acceptance (=PR #8, E2E acceptance contract) is NOT Roadmap PR-D (Manifest/Dashboard)."
