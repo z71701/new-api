@@ -106,11 +106,10 @@ func DesktopLogin(c *gin.Context) {
 	}
 	challenge, err := service.StartDesktopLoginVerification(&user, "password", device)
 	if err != nil {
-		if errors.Is(err, service.ErrVerificationUnavailable) {
-			writeDesktopAuthResponse(c, http.StatusForbidden, false, "AUTH_VERIFICATION_UNSUPPORTED", "Verification method is unsupported", nil)
-			return
-		}
-		writeDesktopAuthError(c, err)
+		// writeDesktopVerificationError maps ErrVerificationUnavailable → 403,
+		// ErrVerificationLocked/ErrVerificationFailed → 401, flow errors → 401,
+		// and falls back to writeDesktopAuthError (500) for anything else.
+		writeDesktopVerificationError(c, err)
 		return
 	}
 	if challenge != nil {

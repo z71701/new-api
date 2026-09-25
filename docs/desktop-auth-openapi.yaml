@@ -1,0 +1,1244 @@
+﻿openapi: 3.1.0
+info:
+  title: Desktop Authentication API
+  # version tracks common.Version (common/constants.go), which defaults to
+  # "v0.0.0" and is overridden at build time. Keep the number in sync when the
+  # auth contract changes.
+  version: "0.0.0"
+  description: |
+    Authentication entry points for the desktop (Electron) client of this AI
+    API gateway. These endpoints issue short-lived access tokens and 7-day
+    desktop refresh sessions, fully separated from the web browser session
+    routes under `/api/user/auth`.
+
+    The four desktop auth endpoints (`/api/desktop/auth/*`) share a single
+    JSON envelope:
+
+    ```json
+    {
+      "success": true,
+      "code": "OK",
+      "message": "",
+      "request_id": "01J...",
+      "server_time": 1730000000,
+      "data": {}
+    }
+    ```
+
+    The two bootstrap endpoints (`GET /api/status` and
+    `GET /api/user/login/encryption-key`) are pre-existing web routes reused by
+    the desktop client; they return the legacy web envelope
+    `{ "success": true, "message": "", "data": {} }` with no `code`,
+    `request_id`, or `server_time`.
+
+    Every desktop auth response carries `Cache-Control: no-store`. Never cache
+    or log tokens. Requests to all four `/api/desktop/auth/*` endpoints are
+    rate limited by the `DesktopAuthRateLimit` middleware; exceeding the budget
+    yields `429` `AUTH_RATE_LIMITED` (with a `Retry-After` header).
+
+    Password submission: either send the raw `password`, or — when password
+    encryption is enabled on the server (`data.password_login_encryption_enabled`
+    from `/api/status`) — send the v2 encrypted envelope in `password_encrypted`
+    together with `encryption_key_id`. The two modes are mutually exclusive. The
+    v2 envelope format is `v2.{wrappedKeyBase64}.{nonceBase64}.{ciphertextBase64}`:
+    - the data key is a fresh AES-256 key wrapped with RSA-OAEP/SHA-256
+      (label `password-v2`) using the server public key;
+    - the password is encrypted with AES-256-GCM, 12-byte nonce, and AAD
+      `password-v2:{keyID}`.
+    `encryption_key_id` is the 32-character hex SHA-256 digest prefix of the
+    active public key; fetch the public key material from
+    `GET /api/user/login/encryption-key` before first use.
+  # x-turnstile is a non-normative extension describing the Cloudflare Turnstile
+  # integration used by desktop login. The site key and IPC carrier page are
+  # deployment/build-specific; the verify URL is fixed.
+  x-turnstile:
+    verify_url: "https://challenges.cloudflare.com/turnstile/v0/siteverify"
+    site_key: "<deployment-specific Turnstile site key>"
+    desktop_rendering: |
+      The desktop client renders the Turnstile challenge in an Electron
+      BrowserWindow that loads a local carrier page hosting the Turnstile
+      widget. After the widget emits a token, the carrier page forwards it to
+      the main process over the IPC channel named below; the main process then
+      sends it as `captcha_token` on POST /api/desktop/auth/login.
+    ipc_channel: "desktop:turnstile-token"
+    ipc_payload_type: string
+    blockers:
+      - "<deployment-specific Turnstile site key (shown to the widget)>"
+      - "<deployment-specific Turnstile secret key (server-side, never shipped to the client)>"
+      - "<build-specific local carrier page URL loaded in the Electron BrowserWindow>"
+servers:
+  - url: http://localhost:3000
+    description: Local development instance
+  - url: https://api.example.com
+    description: Production instance (example; replace with the real deployment URL)
+tags:
+  - name: Desktop Auth
+    description: Electron desktop client authentication flows
+  - name: Desktop Bootstrap
+    description: Pre-login probes the desktop client calls before presenting the login screen
+paths:
+  /api/status:
+    get:
+      tags: [Desktop Bootstrap]
+      operationId: getStatus
+      summary: System status
+      description: |
+        Boot-time probe. The desktop client calls this on startup to detect
+        service availability and read deployment configuration (branding,
+        OAuth/Turnstile/password-login flags) before showing the login screen.
+        No authentication required. Uses the legacy web response envelope.
+      security: []
+      responses:
+        "200":
+          description: Service is up; deployment config payload attached.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/WebEnvelope"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/SystemStatusData"
+              examples:
+                status_default:
+                  summary: Default deployment status payload
+                  value:
+                    success: true
+                    message: ""
+                    data:
+                      version: "v0.0.0"
+                      start_time: 1730000000
+                      email_verification: false
+                      github_oauth: true
+                      github_client_id: "Iv1.xxxxxxxxxxxxxxxx"
+                      system_name: "New API"
+                      logo: "/logo.png"
+                      turnstile_check: true
+                      turnstile_site_key: "1x00000000000000000000AA"
+                      password_login_enabled: true
+                      password_login_encryption_enabled: true
+                      register_enabled: true
+  /api/user/login/encryption-key:
+    get:
+      tags: [Desktop Bootstrap]
+      operationId: getPasswordEncryptionKey
+      summary: Get password encryption public key
+      description: |
+        Called by the desktop client before login to obtain the active RSA
+        public key and key id, used to build the v2 password envelope. No
+        authentication required. When `data.enabled` is `false`, password
+        encryption is turned off and the client must send the raw `password`
+        field instead. When `data.enabled` is `true`, the client encrypts the
+        password and sends `password_encrypted` + `encryption_key_id` (the
+        returned `kid`).
+      security: []
+      responses:
+        "200":
+          description: "Public key material, or `enabled: false` when encryption is off."
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/WebEnvelope"
+                  - type: object
+                    properties:
+                      data:
+                        oneOf:
+                          - $ref: "#/components/schemas/PasswordEncryptionKeyDisabled"
+                          - $ref: "#/components/schemas/PasswordEncryptionKeyEnabled"
+              examples:
+                encryption_key_enabled:
+                  summary: Encryption enabled; public key issued
+                  value:
+                    success: true
+                    message: ""
+                    data:
+                      enabled: true
+                      kid: "0123456789abcdef0123456789abcdef"
+                      public_key: "-----BEGIN PUBLIC KEY-----\nMIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAx1...EXAMPLE...\n-----END PUBLIC KEY-----"
+                encryption_key_disabled:
+                  summary: Encryption disabled; send raw password
+                  value:
+                    success: true
+                    message: ""
+                    data:
+                      enabled: false
+  /api/desktop/auth/login:
+    post:
+      tags: [Desktop Auth]
+      operationId: desktopLogin
+      summary: Exchange username/password for a desktop session
+      description: |
+        Authenticates a desktop client. Requires the device fingerprint
+        fields. If the account requires two-factor authentication, the response
+        is `200` with `code: AUTH_VERIFICATION_REQUIRED` and a challenge
+        (`data.flow_token`); finish it with `/api/desktop/auth/verify`.
+        Otherwise a full token bundle is returned. The two `data` shapes are
+        discriminated by `data.require_verification`.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/DesktopLoginRequest"
+            example:
+              username: "alice@example.com"
+              password_encrypted: "v2.BASE64WRAPPEDKEY.BASE64NONCE.BASE64CIPHERTEXT"
+              encryption_key_id: "0123456789abcdef0123456789abcdef"
+              device_id: "ae4c1f2b-9c3a-4d7e-8b2a-1f0e2d3c4b5a"
+              device_name: "Alice's MacBook Pro"
+              platform: "darwin"
+              arch: "arm64"
+              client_version: "1.2.0"
+              captcha_token: "0.ChM...turnstile-response..."
+      responses:
+        "200":
+          description: |
+            Login succeeded. `data` is either a token bundle
+            (`code: OK`) or a verification challenge
+            (`code: AUTH_VERIFICATION_REQUIRED`).
+          headers:
+            Cache-Control:
+              schema: { type: string }
+              example: "no-store"
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Envelope"
+                  - type: object
+                    properties:
+                      data:
+                        oneOf:
+                          - $ref: "#/components/schemas/DesktopAuthSuccessData"
+                          - $ref: "#/components/schemas/DesktopVerificationChallengeData"
+                        discriminator:
+                          propertyName: require_verification
+                          mapping:
+                            "true": "#/components/schemas/DesktopVerificationChallengeData"
+                            "false": "#/components/schemas/DesktopAuthSuccessData"
+              examples:
+                login_success:
+                  $ref: "#/components/examples/login_success"
+                login_totp_challenge:
+                  $ref: "#/components/examples/login_totp_challenge"
+        "400":
+          description: |
+            Bad request. Error codes: `INVALID_ARGUMENT` (malformed JSON,
+            missing/blank required fields, invalid device metadata, or
+            mutually exclusive password fields), `AUTH_CAPTCHA_INVALID`
+            (Turnstile token rejected), `AUTH_ENCRYPTION_PAYLOAD_INVALID`
+            (bad v2 envelope, encryption enabled but fields incomplete, or
+            encryption disabled but encrypted fields sent).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+              example:
+                success: false
+                code: "INVALID_ARGUMENT"
+                message: "Invalid request"
+                request_id: "01J8XQ2K7VZ9W3Y4T5S6A7B8C9"
+                server_time: 1730000000
+                data: null
+        "401":
+          description: Invalid username or password (`AUTH_INVALID_CREDENTIALS`).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+              example:
+                success: false
+                code: "AUTH_INVALID_CREDENTIALS"
+                message: "Invalid username or password"
+                request_id: "01J8XQ2K7VZ9W3Y4T5S6A7B8C9"
+                server_time: 1730000000
+                data: null
+        "403":
+          description: |
+            `AUTH_PASSWORD_LOGIN_DISABLED` (password login turned off on the
+            server), `AUTH_CAPTCHA_REQUIRED` (Turnstile enabled but
+            `captcha_token` omitted), or `AUTH_VERIFICATION_UNSUPPORTED` (no
+            usable second factor available).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+              example:
+                success: false
+                code: "AUTH_CAPTCHA_REQUIRED"
+                message: "Captcha is required"
+                request_id: "01J8XQ2K7VZ9W3Y4T5S6A7B8C9"
+                server_time: 1730000000
+                data: null
+        "409":
+          description: |
+            `AUTH_ENCRYPTION_KEY_STALE` (client used an outdated encryption
+            public key; re-fetch `GET /api/user/login/encryption-key` and
+            retry), or `AUTH_SESSION_LIMIT` (too many active desktop sessions).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+              example:
+                success: false
+                code: "AUTH_ENCRYPTION_KEY_STALE"
+                message: "Password encryption key is stale"
+                request_id: "01J8XQ2K7VZ9W3Y4T5S6A7B8C9"
+                server_time: 1730000000
+                data: null
+        "429":
+          description: |
+            Rate limited (`AUTH_RATE_LIMITED` from DesktopAuthRateLimit) or
+            `AUTH_SESSION_ISSUANCE_LIMIT` (too many sessions created in the
+            issuance window). Back off and retry after the `Retry-After`
+            seconds.
+          headers:
+            Retry-After:
+              schema: { type: integer, format: int32 }
+              description: Minimum seconds to wait before retrying.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+              examples:
+                rate_limited_429:
+                  $ref: "#/components/examples/rate_limited_429"
+        "500":
+          description: Internal error (`AUTH_INTERNAL_ERROR`).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+              examples:
+                internal_error_5xx:
+                  $ref: "#/components/examples/internal_error_5xx"
+        "503":
+          description: |
+            Turnstile verification service unreachable (`AUTH_CAPTCHA_UNAVAILABLE`,
+            emitted by this handler). Separately, the deployment/edge gateway MAY
+            return 503 with `code: SERVICE_UNAVAILABLE` when the service is down;
+            that code is NOT emitted by any current handler and is a pending
+            deployment-layer contract (see `x-status`).
+          x-status: pending-gateway-layer
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+              example:
+                success: false
+                code: "AUTH_CAPTCHA_UNAVAILABLE"
+                message: "Captcha service is unavailable"
+                request_id: "01J8XQ2K7VZ9W3Y4T5S6A7B8C9"
+                server_time: 1730000000
+                data: null
+  /api/desktop/auth/verify:
+    post:
+      tags: [Desktop Auth]
+      operationId: desktopVerify
+      summary: Complete a TOTP login challenge
+      description: |
+        Submits the TOTP code for a `flow_token` returned by `login`. On
+        success, exchanges the challenge for a full token bundle.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/DesktopVerifyRequest"
+            example:
+              flow_token: "01J8XQ3M8WZ9X4Y5T6S7A8B9C0D"
+              method: "totp"
+              code: "123456"
+      responses:
+        "200":
+          description: Challenge completed; a fresh token bundle is issued.
+          headers:
+            Cache-Control:
+              schema: { type: string }
+              example: "no-store"
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Envelope"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/DesktopAuthSuccessData"
+              examples:
+                totp_verify_success:
+                  $ref: "#/components/examples/totp_verify_success"
+        "400":
+          description: "Malformed request (`INVALID_ARGUMENT`): missing `flow_token`, `code`, or `method` is not `totp`."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+              example:
+                success: false
+                code: "INVALID_ARGUMENT"
+                message: "Invalid request"
+                request_id: "01J8XQ4N9XA0Y5Z6U7V8B9C0D1E2"
+                server_time: 1730000060
+                data: null
+        "401":
+          description: |
+            `AUTH_FLOW_EXPIRED` (challenge expired, consumed, or unknown) or
+            `AUTH_VERIFICATION_FAILED` (wrong TOTP code, locked account, or
+            2FA not enabled).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+              examples:
+                totp_verify_failed:
+                  $ref: "#/components/examples/totp_verify_failed"
+        "403":
+          description: "`AUTH_VERIFICATION_UNSUPPORTED` (the requested second factor is not available)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+              example:
+                success: false
+                code: "AUTH_VERIFICATION_UNSUPPORTED"
+                message: "Verification method is unsupported"
+                request_id: "01J8XQ4N9XA0Y5Z6U7V8B9C0D1E2"
+                server_time: 1730000060
+                data: null
+        "409":
+          description: Session state conflict (`AUTH_SESSION_MISMATCH` / `AUTH_REFRESH_RACE`).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+              example:
+                success: false
+                code: "AUTH_SESSION_MISMATCH"
+                message: "Session credentials do not match"
+                request_id: "01J8XQ4N9XA0Y5Z6U7V8B9C0D1E2"
+                server_time: 1730000060
+                data: null
+        "429":
+          description: Rate limited (`AUTH_RATE_LIMITED`).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+              example:
+                success: false
+                code: "AUTH_RATE_LIMITED"
+                message: "Too Many Requests"
+                request_id: "01J8XQ4N9XA0Y5Z6U7V8B9C0D1E2"
+                server_time: 1730000060
+                data: null
+        "500":
+          description: Internal error (`AUTH_INTERNAL_ERROR`).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+              example:
+                success: false
+                code: "AUTH_INTERNAL_ERROR"
+                message: "Internal Server Error"
+                request_id: "01J8XQ4N9XA0Y5Z6U7V8B9C0D1E2"
+                server_time: 1730000060
+                data: null
+        "503":
+          description: |
+            Optional deployment/gateway-layer response only. The edge gateway or
+            circuit breaker MAY return 503 with `code: SERVICE_UNAVAILABLE` when
+            the service is down. No current verify handler emits this code; it is
+            a pending deployment-layer contract and must not be asserted as backend
+            behavior.
+          x-status: pending-gateway-layer
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+              example:
+                success: false
+                code: "SERVICE_UNAVAILABLE"
+                message: "Service temporarily unavailable"
+                request_id: ""
+                server_time: 0
+                data: null
+  /api/desktop/auth/refresh:
+    post:
+      tags: [Desktop Auth]
+      operationId: desktopRefresh
+      summary: Rotate a desktop refresh token
+      description: |
+        Rotates the refresh token and issues a new access token. The refresh
+        token is single-use: a successful response invalidates the presented
+        token and returns a new one. A short (~30s) tolerance window replays
+        the immediately previous token idempotently, returning the same bundle;
+        any replay outside that window revokes the whole session
+        (`AUTH_SESSION_REVOKED`).
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/DesktopRefreshRequest"
+            example:
+              refresh_token: "8c4d0b2e-3f5a-6b71-8293-0b1c2d3e4f5a.ANOTHER...SECRET"
+              sid: "8c4d0b2e-3f5a-6b71-8293-0b1c2d3e4f5a"
+      responses:
+        "200":
+          description: Rotated; a new access/refresh bundle is returned (or the same bundle on in-window replay).
+          headers:
+            Cache-Control:
+              schema: { type: string }
+              example: "no-store"
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Envelope"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/DesktopAuthSuccessData"
+              examples:
+                refresh_rotation:
+                  $ref: "#/components/examples/refresh_rotation"
+                refresh_30s_retry:
+                  $ref: "#/components/examples/refresh_30s_retry"
+        "400":
+          description: Missing `refresh_token` or `sid` (`INVALID_ARGUMENT`).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+              example:
+                success: false
+                code: "INVALID_ARGUMENT"
+                message: "Invalid request"
+                request_id: "01J8XQ5P0YB1Z6A8W9X0C1D2E3F4"
+                server_time: 1730003600
+                data: null
+        "401":
+          description: |
+            `AUTH_UNAUTHORIZED` (malformed/unknown refresh token),
+            `AUTH_TOKEN_EXPIRED`, `AUTH_SESSION_EXPIRED`, or
+            `AUTH_SESSION_REVOKED` (session expired, revoked, or rotated after a
+            credential change / out-of-window replay). The client must re-login.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+              examples:
+                refresh_out_of_window_replay:
+                  $ref: "#/components/examples/refresh_out_of_window_replay"
+        "409":
+          description: "`AUTH_SESSION_MISMATCH` (`sid` does not match the token) or `AUTH_REFRESH_RACE` (concurrent rotation)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+              example:
+                success: false
+                code: "AUTH_REFRESH_RACE"
+                message: "Conflict"
+                request_id: "01J8XQ5P0YB1Z6A8W9X0C1D2E3F4"
+                server_time: 1730003600
+                data: null
+        "429":
+          description: Rate limited (`AUTH_RATE_LIMITED`) or issuance window exhausted (`AUTH_SESSION_ISSUANCE_LIMIT`).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+              example:
+                success: false
+                code: "AUTH_RATE_LIMITED"
+                message: "Too Many Requests"
+                request_id: "01J8XQ5P0YB1Z6A8W9X0C1D2E3F4"
+                server_time: 1730003600
+                data: null
+        "500":
+          description: Internal error (`AUTH_INTERNAL_ERROR`).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+              example:
+                success: false
+                code: "AUTH_INTERNAL_ERROR"
+                message: "Internal Server Error"
+                request_id: "01J8XQ5P0YB1Z6A8W9X0C1D2E3F4"
+                server_time: 1730003600
+                data: null
+        "503":
+          description: |
+            Optional deployment/gateway-layer response only. The edge gateway or
+            circuit breaker MAY return 503 with `code: SERVICE_UNAVAILABLE` when
+            the service is down. No current refresh handler emits this code; it is
+            a pending deployment-layer contract and must not be asserted as backend
+            behavior.
+          x-status: pending-gateway-layer
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+              example:
+                success: false
+                code: "SERVICE_UNAVAILABLE"
+                message: "Service temporarily unavailable"
+                request_id: ""
+                server_time: 0
+                data: null
+  /api/desktop/auth/logout:
+    post:
+      tags: [Desktop Auth]
+      operationId: desktopLogout
+      summary: Revoke a desktop session
+      description: |
+        Revokes the session identified by the refresh token. Optionally send
+        the current access token as `Authorization: Bearer <access_token>`; if
+        present and it does not match the refresh token's session, the request
+        fails with `409 AUTH_SESSION_MISMATCH` (anti-CSRF check). Logout is
+        idempotent: revoking an already-revoked or unknown session still
+        returns `200 {logged_out: true}`.
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/DesktopLogoutRequest"
+            example:
+              refresh_token: "9d5e1c3f-4a6b-7c82-9304-1c2d3e4f5a6b.ROTATED...SECRET"
+              sid: "8c4d0b2e-3f5a-6b71-8293-0b1c2d3e4f5a"
+      responses:
+        "200":
+          description: Session revoked (or already gone; logout is idempotent for unknown/revoked sessions).
+          headers:
+            Cache-Control:
+              schema: { type: string }
+              example: "no-store"
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Envelope"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/DesktopLogoutData"
+              examples:
+                logout_success:
+                  $ref: "#/components/examples/logout_success"
+                logout_duplicate:
+                  $ref: "#/components/examples/logout_duplicate"
+        "400":
+          description: Missing `refresh_token` or `sid` (`INVALID_ARGUMENT`).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+              example:
+                success: false
+                code: "INVALID_ARGUMENT"
+                message: "Invalid request"
+                request_id: "01J8XQ6Q2ZC2A7B0Y1Z2D3E4F5A6"
+                server_time: 1730004000
+                data: null
+        "401":
+          description: Refresh token not recognized for a desktop session (`AUTH_UNAUTHORIZED`).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+              examples:
+                logout_random_token:
+                  $ref: "#/components/examples/logout_random_token"
+        "409":
+          description: "`AUTH_SESSION_MISMATCH` (presented access token belongs to a different session, or `sid` does not match the refresh token)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+              example:
+                success: false
+                code: "AUTH_SESSION_MISMATCH"
+                message: "Session credentials do not match"
+                request_id: "01J8XQ6Q2ZC2A7B0Y1Z2D3E4F5A6"
+                server_time: 1730004000
+                data: null
+        "429":
+          description: Rate limited (`AUTH_RATE_LIMITED`).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+              example:
+                success: false
+                code: "AUTH_RATE_LIMITED"
+                message: "Too Many Requests"
+                request_id: "01J8XQ6Q2ZC2A7B0Y1Z2D3E4F5A6"
+                server_time: 1730004000
+                data: null
+        "500":
+          description: Internal error (`AUTH_INTERNAL_ERROR`).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+              example:
+                success: false
+                code: "AUTH_INTERNAL_ERROR"
+                message: "Internal Server Error"
+                request_id: "01J8XQ6Q2ZC2A7B0Y1Z2D3E4F5A6"
+                server_time: 1730004000
+                data: null
+        "503":
+          description: |
+            Optional deployment/gateway-layer response only. The edge gateway or
+            circuit breaker MAY return 503 with `code: SERVICE_UNAVAILABLE` when
+            the service is down. No current logout handler emits this code; it is
+            a pending deployment-layer contract and must not be asserted as backend
+            behavior.
+          x-status: pending-gateway-layer
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+              example:
+                success: false
+                code: "SERVICE_UNAVAILABLE"
+                message: "Service temporarily unavailable"
+                request_id: ""
+                server_time: 0
+                data: null
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: Optional access token for logout's refresh-token/access-token binding check.
+  schemas:
+    Envelope:
+      type: object
+      description: Shared response envelope returned by every /api/desktop/auth/* endpoint.
+      required: [success, code, message, request_id, server_time]
+      properties:
+        success:
+          type: boolean
+          description: Whether the request succeeded.
+        code:
+          type: string
+          description: Machine-readable status code; "OK" on success.
+        message:
+          type: string
+          description: Human-readable message; empty on success.
+        request_id:
+          type: string
+          description: Correlation ID for this request.
+        server_time:
+          type: integer
+          format: int64
+          description: Server Unix timestamp when the response was written.
+        data:
+          description: Endpoint payload; null on error.
+    WebEnvelope:
+      type: object
+      description: |
+        Legacy web response envelope used by the bootstrap endpoints
+        /api/status and /api/user/login/encryption-key. Unlike the desktop
+        Envelope it carries no `code`, `request_id`, or `server_time`.
+      required: [success, message, data]
+      properties:
+        success:
+          type: boolean
+        message:
+          type: string
+        data:
+          description: Endpoint payload.
+    ErrorResponse:
+      type: object
+      description: "Standard error envelope (`success: false`)."
+      required: [success, code, message, request_id, server_time]
+      properties:
+        success:
+          type: boolean
+          example: false
+        code:
+          type: string
+          description: |
+            Machine-readable error code. Possible values across these endpoints:
+            OK, INVALID_ARGUMENT, AUTH_PASSWORD_LOGIN_DISABLED, AUTH_CAPTCHA_REQUIRED,
+            AUTH_CAPTCHA_INVALID, AUTH_CAPTCHA_UNAVAILABLE,
+            AUTH_ENCRYPTION_PAYLOAD_INVALID, AUTH_ENCRYPTION_KEY_STALE,
+            AUTH_INVALID_CREDENTIALS, AUTH_VERIFICATION_UNSUPPORTED,
+            AUTH_VERIFICATION_REQUIRED, AUTH_FLOW_EXPIRED, AUTH_VERIFICATION_FAILED,
+            AUTH_SESSION_LIMIT, AUTH_SESSION_ISSUANCE_LIMIT, AUTH_SESSION_MISMATCH,
+            AUTH_REFRESH_RACE, AUTH_TOKEN_EXPIRED, AUTH_SESSION_EXPIRED,
+            AUTH_SESSION_REVOKED, AUTH_UNAUTHORIZED, AUTH_RATE_LIMITED,
+            AUTH_INTERNAL_ERROR.
+        message:
+          type: string
+        request_id:
+          type: string
+        server_time:
+          type: integer
+          format: int64
+        data:
+          description: Always null in error responses.
+          oneOf:
+            - type: "null"
+            - type: object
+    SystemStatusData:
+      type: object
+      description: |
+        Boot-time probe payload for the desktop client. The desktop client
+        calls GET /api/status on startup to detect service availability and to
+        read deployment config (OAuth/Turnstile/password-login flags and
+        branding) before presenting the login screen. The live object also
+        carries web-only operational flags not listed here; the desktop client
+        only consumes the fields below.
+      required: [version, start_time, email_verification, github_oauth, system_name, logo]
+      properties:
+        version:
+          type: string
+          description: Server build version (common.Version).
+        start_time:
+          type: integer
+          format: int64
+          description: Server process start Unix timestamp.
+        email_verification:
+          type: boolean
+        github_oauth:
+          type: boolean
+        github_client_id:
+          type: string
+          description: Public GitHub OAuth client ID; empty when github_oauth is false.
+        system_name:
+          type: string
+          description: Display name of the deployment.
+        logo:
+          type: string
+          description: Logo URL or data URI.
+        turnstile_check:
+          type: boolean
+          description: Whether Turnstile challenge is enforced on login.
+        turnstile_site_key:
+          type: string
+          description: Public Turnstile site key; present when turnstile_check is true.
+        password_login_enabled:
+          type: boolean
+        password_login_encryption_enabled:
+          type: boolean
+          description: When true, the desktop client must fetch GET /api/user/login/encryption-key and submit password_encrypted.
+        register_enabled:
+          type: boolean
+    PasswordEncryptionKeyDisabled:
+      type: object
+      description: Returned when password encryption is disabled on the server; send raw `password`.
+      required: [enabled]
+      properties:
+        enabled:
+          type: boolean
+          enum: [false]
+    PasswordEncryptionKeyEnabled:
+      type: object
+      description: Returned when password encryption is enabled; the desktop client fetches this before login to encrypt the v2 password envelope.
+      required: [enabled, kid, public_key]
+      properties:
+        enabled:
+          type: boolean
+          enum: [true]
+        kid:
+          type: string
+          description: Key identifier (32-char hex SHA-256 digest prefix); echoed back as `encryption_key_id` on login.
+        public_key:
+          type: string
+          description: RSA public key in PEM format; used to wrap the AES data key (RSA-OAEP/SHA-256, label "password-v2").
+    DesktopLoginRequest:
+      type: object
+      required: [username, device_id, device_name, platform, arch, client_version]
+      properties:
+        username:
+          type: string
+          description: Account username or email.
+        password:
+          type: string
+          description: |
+            Raw password. Send this OR the encrypted pair below, never both.
+            Required when password encryption is disabled on the server.
+        password_encrypted:
+          type: string
+          description: |
+            v2 encrypted password envelope:
+            `v2.{wrappedKeyBase64}.{nonceBase64}.{ciphertextBase64}`.
+            Required (with `encryption_key_id`) when password encryption is
+            enabled on the server; mutually exclusive with `password`.
+          example: "v2.BASE64WRAPPEDKEY.BASE64NONCE.BASE64CIPHERTEXT"
+        encryption_key_id:
+          type: string
+          pattern: "^[0-9a-fA-F]{32}$"
+          description: |
+            Identifier of the public key used to encrypt, a 32-character hex
+            string (SHA-256 digest prefix). Must match the server's active key;
+            a stale value yields 409 AUTH_ENCRYPTION_KEY_STALE.
+        device_id:
+          type: string
+          maxLength: 64
+          description: Stable per-device identifier generated by the desktop client.
+        device_name:
+          type: string
+          maxLength: 128
+          description: Human-readable device name (e.g. OS machine name).
+        platform:
+          type: string
+          enum: [win32, darwin]
+          description: Operating system family as reported by Electron.
+        arch:
+          type: string
+          enum: [x64, arm64]
+          description: CPU architecture as reported by Electron.
+        client_version:
+          type: string
+          maxLength: 32
+          description: Desktop client (app) version.
+        captcha_token:
+          type: string
+          description: |
+            Cloudflare Turnstile response token. Required when
+            TurnstileCheckEnabled is on; omitted otherwise. The widget itself
+            is rendered by the desktop client in an Electron BrowserWindow (see
+            x-turnstile).
+    DesktopVerifyRequest:
+      type: object
+      required: [flow_token, method, code]
+      properties:
+        flow_token:
+          type: string
+          description: Challenge token issued by the login endpoint.
+        method:
+          type: string
+          enum: [totp]
+          description: Second factor method. Only `totp` is supported.
+        code:
+          type: string
+          description: Current TOTP code.
+          example: "123456"
+    DesktopRefreshRequest:
+      type: object
+      required: [refresh_token, sid]
+      properties:
+        refresh_token:
+          type: string
+          description: |
+            Refresh token in `{sid}.{secret}` format. Single-use; rotated on
+            every successful call.
+        sid:
+          type: string
+          description: Session ID (UUID) the refresh token belongs to.
+    DesktopLogoutRequest:
+      type: object
+      required: [refresh_token, sid]
+      properties:
+        refresh_token:
+          type: string
+          description: Refresh token of the session to revoke.
+        sid:
+          type: string
+          description: Session ID the refresh token belongs to. Must match the token.
+    DesktopUserView:
+      type: object
+      properties:
+        id:
+          type: string
+          description: Numeric user ID as a string.
+        username:
+          type: string
+        display_name:
+          type: string
+    LoginSessionView:
+      type: object
+      description: |
+        A desktop login session. The device_* fields are only populated for
+        desktop sessions (client_type = "desktop").
+      properties:
+        sid:
+          type: string
+          description: Session ID (UUID).
+        current:
+          type: boolean
+          description: Whether this session was issued by the current request.
+        client_type:
+          type: string
+          enum: [web, desktop]
+        login_method:
+          type: string
+          description: e.g. "password".
+        ip:
+          type: string
+        user_agent:
+          type: string
+        device_id:
+          type: string
+          description: Present only for desktop sessions.
+        device_name:
+          type: string
+          description: Present only for desktop sessions.
+        platform:
+          type: string
+          description: Present only for desktop sessions.
+        arch:
+          type: string
+          description: Present only for desktop sessions.
+        client_version:
+          type: string
+          description: Present only for desktop sessions.
+        created_at:
+          type: integer
+          format: int64
+        last_active_at:
+          type: integer
+          format: int64
+        expires_at:
+          type: integer
+          format: int64
+          description: Session expiry; the refresh token cannot be used past this time.
+    DesktopAuthSuccessData:
+      type: object
+      description: Token bundle returned on successful login / verify / refresh. Does NOT carry `require_verification` (implied false).
+      required: [access_token, refresh_token, token_type, access_expires_at, session, user]
+      properties:
+        access_token:
+          type: string
+          description: Short-lived bearer access token (JWT).
+        refresh_token:
+          type: string
+          description: Long-lived refresh token (`{sid}.{secret}`); rotated on refresh.
+        token_type:
+          type: string
+          example: "Bearer"
+        access_expires_at:
+          type: integer
+          format: int64
+          description: Expiry Unix timestamp of the access token.
+        session:
+          $ref: "#/components/schemas/LoginSessionView"
+        user:
+          $ref: "#/components/schemas/DesktopUserView"
+    DesktopVerificationChallengeData:
+      type: object
+      description: "Returned when `code: AUTH_VERIFICATION_REQUIRED`; discriminator value `require_verification: true`."
+      required: [require_verification, flow_token, expires_at, methods]
+      properties:
+        require_verification:
+          type: boolean
+          enum: [true]
+          example: true
+        flow_token:
+          type: string
+          description: Opaque challenge token to submit to /api/desktop/auth/verify.
+        expires_at:
+          type: integer
+          format: int64
+          description: Challenge expiry (5-minute TTL).
+        methods:
+          type: array
+          items:
+            type: string
+            enum: [totp]
+          description: Available second factors.
+    DesktopLogoutData:
+      type: object
+      properties:
+        logged_out:
+          type: boolean
+          example: true
+  examples:
+    login_success:
+      summary: Desktop login success (no 2FA)
+      value:
+        success: true
+        code: "OK"
+        message: ""
+        request_id: "01J8XQ2K7VZ9W3Y4T5S6A7B8C9"
+        server_time: 1730000000
+        data:
+          access_token: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+          refresh_token: "7b3f9a1c-2d4e-5f60-7182-90a1b2c3d4e5.SEVERYMUC...SECRET"
+          token_type: "Bearer"
+          access_expires_at: 1730003600
+          session:
+            sid: "7b3f9a1c-2d4e-5f60-7182-90a1b2c3d4e5"
+            current: true
+            client_type: "desktop"
+            login_method: "password"
+            ip: "203.0.113.10"
+            user_agent: "new-api-desktop/1.2.0 (darwin; arm64)"
+            device_id: "ae4c1f2b-9c3a-4d7e-8b2a-1f0e2d3c4b5a"
+            device_name: "Alice's MacBook Pro"
+            platform: "darwin"
+            arch: "arm64"
+            client_version: "1.2.0"
+            created_at: 1730000000
+            last_active_at: 1730000000
+            expires_at: 1730604800
+          user:
+            id: "42"
+            username: "alice@example.com"
+            display_name: "Alice"
+    login_totp_challenge:
+      summary: TOTP challenge required
+      value:
+        success: true
+        code: "AUTH_VERIFICATION_REQUIRED"
+        message: "Verification required"
+        request_id: "01J8XQ2K7VZ9W3Y4T5S6A7B8C9"
+        server_time: 1730000000
+        data:
+          require_verification: true
+          flow_token: "01J8XQ3M8WZ9X4Y5T6S7A8B9C0D"
+          expires_at: 1730000300
+          methods: ["totp"]
+    totp_verify_success:
+      summary: TOTP verify success
+      value:
+        success: true
+        code: "OK"
+        message: ""
+        request_id: "01J8XQ4N9XA0Y5Z6U7V8B9C0D1E2"
+        server_time: 1730000060
+        data:
+          access_token: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+          refresh_token: "8c4d0b2e-3f5a-6b71-8293-0b1c2d3e4f5a.ANOTHER...SECRET"
+          token_type: "Bearer"
+          access_expires_at: 1730003660
+          session:
+            sid: "8c4d0b2e-3f5a-6b71-8293-0b1c2d3e4f5a"
+            current: true
+            client_type: "desktop"
+            login_method: "password"
+            ip: "203.0.113.10"
+            user_agent: "new-api-desktop/1.2.0 (darwin; arm64)"
+            device_id: "ae4c1f2b-9c3a-4d7e-8b2a-1f0e2d3c4b5a"
+            device_name: "Alice's MacBook Pro"
+            platform: "darwin"
+            arch: "arm64"
+            client_version: "1.2.0"
+            created_at: 1730000060
+            last_active_at: 1730000060
+            expires_at: 1730604860
+          user:
+            id: "42"
+            username: "alice@example.com"
+            display_name: "Alice"
+    totp_verify_failed:
+      summary: TOTP verify failed (401)
+      value:
+        success: false
+        code: "AUTH_VERIFICATION_FAILED"
+        message: "Verification failed"
+        request_id: "01J8XQ4N9XA0Y5Z6U7V8B9C0D1E2"
+        server_time: 1730000060
+        data: null
+    refresh_rotation:
+      summary: Refresh token rotation issues a new refresh_token
+      value:
+        success: true
+        code: "OK"
+        message: ""
+        request_id: "01J8XQ5P0YB1Z6A8W9X0C1D2E3F4"
+        server_time: 1730003600
+        data:
+          access_token: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+          refresh_token: "9d5e1c3f-4a6b-7c82-9304-1c2d3e4f5a6b.ROTATED...SECRET"
+          token_type: "Bearer"
+          access_expires_at: 1730007200
+          session:
+            sid: "8c4d0b2e-3f5a-6b71-8293-0b1c2d3e4f5a"
+            current: true
+            client_type: "desktop"
+            login_method: "password"
+            ip: "203.0.113.10"
+            user_agent: "new-api-desktop/1.2.0 (darwin; arm64)"
+            device_id: "ae4c1f2b-9c3a-4d7e-8b2a-1f0e2d3c4b5a"
+            device_name: "Alice's MacBook Pro"
+            platform: "darwin"
+            arch: "arm64"
+            client_version: "1.2.0"
+            created_at: 1730000060
+            last_active_at: 1730003600
+            expires_at: 1730604860
+          user:
+            id: "42"
+            username: "alice@example.com"
+            display_name: "Alice"
+    refresh_30s_retry:
+      summary: Replay of the previous refresh_token within the 30s tolerance window returns the same bundle
+      value:
+        success: true
+        code: "OK"
+        message: ""
+        request_id: "01J8XQ5P0YB1Z6A8W9X0C1D2E3F5"
+        server_time: 1730003615
+        data:
+          access_token: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+          refresh_token: "9d5e1c3f-4a6b-7c82-9304-1c2d3e4f5a6b.ROTATED...SECRET"
+          token_type: "Bearer"
+          access_expires_at: 1730007200
+          session:
+            sid: "8c4d0b2e-3f5a-6b71-8293-0b1c2d3e4f5a"
+            current: true
+            client_type: "desktop"
+            login_method: "password"
+            ip: "203.0.113.10"
+            user_agent: "new-api-desktop/1.2.0 (darwin; arm64)"
+            device_id: "ae4c1f2b-9c3a-4d7e-8b2a-1f0e2d3c4b5a"
+            device_name: "Alice's MacBook Pro"
+            platform: "darwin"
+            arch: "arm64"
+            client_version: "1.2.0"
+            created_at: 1730000060
+            last_active_at: 1730003615
+            expires_at: 1730604860
+          user:
+            id: "42"
+            username: "alice@example.com"
+            display_name: "Alice"
+    refresh_out_of_window_replay:
+      summary: Out-of-window replay of a revoked refresh_token (401 AUTH_SESSION_REVOKED)
+      value:
+        success: false
+        code: "AUTH_SESSION_REVOKED"
+        message: "Unauthorized"
+        request_id: "01J8XQ5P0YB1Z6A8W9X0C1D2E3F6"
+        server_time: 1730007300
+        data: null
+    logout_success:
+      summary: Logout success
+      value:
+        success: true
+        code: "OK"
+        message: ""
+        request_id: "01J8XQ6Q2ZC2A7B0Y1Z2D3E4F5A6"
+        server_time: 1730004000
+        data:
+          logged_out: true
+    logout_duplicate:
+      summary: Idempotent repeat logout on an already-revoked session
+      value:
+        success: true
+        code: "OK"
+        message: ""
+        request_id: "01J8XQ6Q2ZC2A7B0Y1Z2D3E4F5A7"
+        server_time: 1730004100
+        data:
+          logged_out: true
+    logout_random_token:
+      summary: Random/unknown refresh_token rejected (401 AUTH_UNAUTHORIZED)
+      value:
+        success: false
+        code: "AUTH_UNAUTHORIZED"
+        message: "Unauthorized"
+        request_id: "01J8XQ6Q2ZC2A7B0Y1Z2D3E4F5A8"
+        server_time: 1730004200
+        data: null
+    rate_limited_429:
+      summary: Rate limited (429 AUTH_RATE_LIMITED) with Retry-After
+      value:
+        success: false
+        code: "AUTH_RATE_LIMITED"
+        message: "Too Many Requests"
+        request_id: "01J8XQ7R3AD3B8C1Z2A3D4E5F6A7"
+        server_time: 1730004300
+        data: null
+    internal_error_5xx:
+      summary: Internal server error (500 AUTH_INTERNAL_ERROR)
+      value:
+        success: false
+        code: "AUTH_INTERNAL_ERROR"
+        message: "Internal Server Error"
+        request_id: "01J8XQ7R3AD3B8C1Z2A3D4E5F6A9"
+        server_time: 1730004400
+        data: null

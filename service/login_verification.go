@@ -94,6 +94,13 @@ func startLoginVerification(user *model.User, loginMethod string, migration *Leg
 		available = available || method.Available
 	}
 	if !available {
+		// A TOTP factor that is enrolled but temporarily locked is a verification
+		// failure (401 AUTH_VERIFICATION_FAILED), not an unsupported method (403):
+		// the user passed the password step and the factor exists, it is just in
+		// a lockout window. Aligns with requireLoginVerificationMethod behaviour.
+		if state.TwoFALocked {
+			return nil, ErrVerificationLocked
+		}
 		return nil, ErrVerificationUnavailable
 	}
 	payload := loginFlowPayload{AuthVersion: state.AuthVersion, LoginMethod: loginMethod, Policy: policy}
@@ -155,6 +162,13 @@ func requireLoginVerificationMethod(state *model.UserVerificationState, method s
 			continue
 		}
 		if !option.Available {
+			// A TOTP factor that is enrolled but temporarily locked is a
+			// verification failure (401), not an unsupported method (403): the
+			// user already passed the password step and the factor exists, it is
+			// just in a lockout window.
+			if method == VerificationMethodTwoFA && state.TwoFALocked {
+				return ErrVerificationLocked
+			}
 			return ErrVerificationUnavailable
 		}
 		return nil
