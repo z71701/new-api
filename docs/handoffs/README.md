@@ -30,3 +30,5 @@
 2. 所有 URL 必须含 commit SHA，不使用 `main` 分支浮动引用。
 3. 校验：`python scripts/aliai_validate.py <repo-root>`。
 4. 命名陷阱：`pr-d-desktop-e2e-acceptance`（PR #8 E2E 契约）≠ Roadmap PR-D（Manifest/Dashboard）。
+
+> 协作者三仓治理说明见 [Yohalloo/aliai-desktop PR #3](https://github.com/Yohalloo/aliai-desktop/pull/3)（合并后更新为 main 固定 commit URL）。

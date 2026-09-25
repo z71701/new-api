@@ -1,6 +1,7 @@
 # ALIAI repository governance manifest. Machine-readable.
 # Consumed by scripts/aliai_validate.py and the aliai-cross-repo-coordination skill.
 schema_version: "1.0"
+project_skill: ".agents/skills/aliai-cross-repo-coordination/SKILL.md"
 repo:
   name: "z71701/new-api"                   # this repo: backend
   role: "backend"                          # backend | client | deploy

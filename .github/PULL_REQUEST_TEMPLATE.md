@@ -71,4 +71,4 @@ English template: `.github/PULL_REQUEST_TEMPLATE/en.md`
 - [ ] Only intended files changed; no user uncommitted work touched
 
 ### Merge / deploy agent note
-> Before merging or deploying, the merge/deploy agent **must invoke the `aliai-cross-repo-coordination` skill** to route downstream handoffs (backend->client+deploy, client->acceptance handoff, deploy->digest update+production verify). Cross-repo follow-ups must be independent PRs that preserve the source SHA. Do not merge this PR as a substitute for those downstream PRs.
+> Before merging or deploying, the merge/deploy agent **must read and follow this repo's project-level skill at `.agents/skills/aliai-cross-repo-coordination/SKILL.md`** (`aliai-cross-repo-coordination`) to route downstream handoffs (backend->client+deploy, client->acceptance handoff, deploy->digest update+production verify). Cross-repo follow-ups must be independent PRs that preserve the source SHA. Do not merge this PR as a substitute for those downstream PRs.
