@@ -11,6 +11,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -105,7 +106,7 @@ func openTokenControllerTestDB(t *testing.T) *gorm.DB {
 func migrateTokenControllerTestDB(t *testing.T, db *gorm.DB) {
 	t.Helper()
 
-	if err := db.AutoMigrate(&model.Token{}); err != nil {
+	if err := db.AutoMigrate(&model.Token{}, &model.TokenCreateIdempotency{}, &model.User{}); err != nil {
 		t.Fatalf("failed to migrate token table: %v", err)
 	}
 }
@@ -147,15 +148,15 @@ func openTokenControllerExternalDB(t *testing.T, dialect string, dsn string) (*g
 	model.DB = db
 	model.LOG_DB = db
 
-	if db.Migrator().HasTable("tokens") {
-		t.Skipf("refusing to run %s migration compatibility test against external database because tokens table already exists", dialect)
+	if db.Migrator().HasTable("tokens") || db.Migrator().HasTable(&model.TokenCreateIdempotency{}) {
+		t.Skipf("refusing to run %s migration compatibility test against external database because managed tables already exist", dialect)
 	}
 
 	managedTokensTable := new(bool)
 
 	t.Cleanup(func() {
-		if *managedTokensTable && db.Migrator().HasTable("tokens") {
-			_ = db.Migrator().DropTable("tokens")
+		if *managedTokensTable {
+			_ = db.Migrator().DropTable(&model.TokenCreateIdempotency{}, "tokens")
 		}
 		sqlDB, err := db.DB()
 		if err == nil {
@@ -185,6 +186,25 @@ func seedToken(t *testing.T, db *gorm.DB, userID int, name string, rawKey string
 		t.Fatalf("failed to create token: %v", err)
 	}
 	return token
+}
+
+func seedTestUser(t *testing.T, db *gorm.DB, id int) *model.User {
+	t.Helper()
+
+	user := &model.User{
+		Id:          id,
+		Username:    fmt.Sprintf("test-user-%d", id),
+		Password:    "placeholder-password",
+		Role:        common.RoleCommonUser,
+		Status:      common.UserStatusEnabled,
+		Group:       "default",
+		AffCode:     fmt.Sprintf("affcode%d", id),
+		AuthVersion: 1,
+	}
+	if err := db.Create(user).Error; err != nil {
+		t.Fatalf("failed to seed user %d: %v", id, err)
+	}
+	return user
 }
 
 func newAuthenticatedContext(t *testing.T, method string, target string, body any, userID int) (*gin.Context, *httptest.ResponseRecorder) {
@@ -351,6 +371,12 @@ func runTokenMigrationCompatibilityTest(t *testing.T, db *gorm.DB, dialect strin
 	if !db.Migrator().HasColumn(&model.Token{}, "auto_groups") {
 		t.Fatal("expected migration to add auto_groups column")
 	}
+	if !db.Migrator().HasTable(&model.TokenCreateIdempotency{}) {
+		t.Fatal("expected migration to add token idempotency table")
+	}
+	if !db.Migrator().HasIndex(&model.TokenCreateIdempotency{}, "uniq_token_create_idempotency") {
+		t.Fatal("expected migration to add token idempotency unique index")
+	}
 	if got := getTokenAutoGroupsColumnType(t, db, dialect); got != "text" {
 		t.Fatalf("expected migrated auto_groups column type text, got %q", got)
 	}
@@ -397,6 +423,8 @@ func runTokenMigrationCompatibilityTest(t *testing.T, db *gorm.DB, dialect strin
 	if fetched.Key != longKey {
 		t.Fatalf("expected long token key %q, got %q", longKey, fetched.Key)
 	}
+	// Startup migration must remain safe to run repeatedly.
+	migrateTokenControllerTestDB(t, db)
 }
 
 func TestTokenAutoMigrateUsesVarchar128KeyColumn(t *testing.T) {
@@ -433,6 +461,198 @@ func TestTokenMigrationFromChar48ToVarchar128Postgres(t *testing.T) {
 
 	db, managedTokensTable := openTokenControllerExternalDB(t, "postgres", dsn)
 	runTokenMigrationCompatibilityTest(t, db, "postgres", managedTokensTable)
+}
+
+func TestAddTokenIdempotencyReturnsSameMaskedToken(t *testing.T) {
+	db := setupTokenControllerTestDB(t)
+	seedTestUser(t, db, 1)
+	body := map[string]any{"name": "desktop-key", "expired_time": -1, "unlimited_quota": true}
+
+	create := func(idempotencyKey string, requestBody any) *httptest.ResponseRecorder {
+		ctx, recorder := newAuthenticatedContext(t, http.MethodPost, "/api/token/", requestBody, 1)
+		ctx.Request.Header.Set("Idempotency-Key", idempotencyKey)
+		AddToken(ctx)
+		return recorder
+	}
+	first := create("desktop-create-1", body)
+	second := create("desktop-create-1", body)
+	assert.Equal(t, http.StatusOK, first.Code)
+	assert.Equal(t, http.StatusOK, second.Code)
+
+	var firstResponse, secondResponse struct {
+		Success bool `json:"success"`
+		Data    struct {
+			ID    int               `json:"id"`
+			Token tokenResponseItem `json:"token"`
+		} `json:"data"`
+	}
+	require.NoError(t, common.Unmarshal(first.Body.Bytes(), &firstResponse))
+	require.NoError(t, common.Unmarshal(second.Body.Bytes(), &secondResponse))
+	require.True(t, firstResponse.Success)
+	require.True(t, secondResponse.Success)
+	assert.Positive(t, firstResponse.Data.ID)
+	assert.Equal(t, firstResponse.Data.ID, firstResponse.Data.Token.ID)
+	assert.Equal(t, firstResponse.Data, secondResponse.Data)
+
+	var count int64
+	require.NoError(t, db.Model(&model.Token{}).Count(&count).Error)
+	assert.EqualValues(t, 1, count)
+	var stored model.Token
+	require.NoError(t, db.First(&stored, firstResponse.Data.ID).Error)
+	assert.Equal(t, stored.GetMaskedKey(), firstResponse.Data.Token.Key)
+	assert.NotContains(t, first.Body.String(), stored.Key)
+
+	conflictBody := map[string]any{"name": "different-key", "expired_time": -1, "unlimited_quota": true}
+	conflict := create("desktop-create-1", conflictBody)
+	assert.Equal(t, http.StatusConflict, conflict.Code)
+	assert.Contains(t, conflict.Body.String(), `"code":"IDEMPOTENCY_CONFLICT"`)
+	require.NoError(t, db.Model(&model.Token{}).Count(&count).Error)
+	assert.EqualValues(t, 1, count)
+}
+
+func TestAddTokenConcurrentIdempotencySQLite(t *testing.T) {
+	db := setupTokenControllerTestDB(t)
+	seedTestUser(t, db, 7)
+	const requests = 12
+	type result struct {
+		status int
+		body   string
+		id     int
+	}
+	results := make(chan result, requests)
+	var wg sync.WaitGroup
+	for range requests {
+		wg.Go(func() {
+			ctx, recorder := newAuthenticatedContext(t, http.MethodPost, "/api/token/", map[string]any{
+				"name": "concurrent-desktop-key", "expired_time": -1, "unlimited_quota": true,
+			}, 7)
+			ctx.Request.Header.Set("Idempotency-Key", "same-concurrent-request")
+			AddToken(ctx)
+			var response struct {
+				Data struct {
+					ID int `json:"id"`
+				} `json:"data"`
+			}
+			_ = common.Unmarshal(recorder.Body.Bytes(), &response)
+			results <- result{status: recorder.Code, body: recorder.Body.String(), id: response.Data.ID}
+		})
+	}
+	wg.Wait()
+	close(results)
+
+	var expectedID int
+	for got := range results {
+		assert.Equal(t, http.StatusOK, got.status, got.body)
+		assert.NotContains(t, strings.ToLower(got.body), "database is locked")
+		assert.Positive(t, got.id)
+		if expectedID == 0 {
+			expectedID = got.id
+		}
+		assert.Equal(t, expectedID, got.id)
+	}
+	var tokenCount, recordCount int64
+	require.NoError(t, db.Model(&model.Token{}).Count(&tokenCount).Error)
+	require.NoError(t, db.Model(&model.TokenCreateIdempotency{}).Count(&recordCount).Error)
+	assert.EqualValues(t, 1, tokenCount)
+	assert.EqualValues(t, 1, recordCount)
+}
+
+func TestDesktopTokenCreateRequiresIdempotencyKey(t *testing.T) {
+	setupTokenControllerTestDB(t)
+	ctx, recorder := newAuthenticatedContext(t, http.MethodPost, "/api/token/", map[string]any{
+		"name": "desktop-without-idempotency", "expired_time": -1, "unlimited_quota": true,
+	}, 1)
+	ctx.Set("dashboard_session_client_type", model.UserSessionClientDesktop)
+	AddToken(ctx)
+	assert.Equal(t, http.StatusBadRequest, recorder.Code)
+	assert.Contains(t, recorder.Body.String(), `"code":"INVALID_ARGUMENT"`)
+}
+func TestAddTokenLegacyResponseHasNoData(t *testing.T) {
+	db := setupTokenControllerTestDB(t)
+	seedTestUser(t, db, 1)
+	ctx, recorder := newAuthenticatedContext(t, http.MethodPost, "/api/token/", map[string]any{
+		"name": "legacy-web-key", "expired_time": -1, "unlimited_quota": true,
+	}, 1)
+	AddToken(ctx)
+	assert.Equal(t, http.StatusOK, recorder.Code)
+	assert.JSONEq(t, `{"success":true,"message":""}`, recorder.Body.String())
+}
+
+func TestAddTokenIdempotencyKeyTooLongReturns400(t *testing.T) {
+	setupTokenControllerTestDB(t)
+	ctx, recorder := newAuthenticatedContext(t, http.MethodPost, "/api/token/", map[string]any{
+		"name": "long-key", "expired_time": -1, "unlimited_quota": true,
+	}, 1)
+	ctx.Request.Header.Set("Idempotency-Key", strings.Repeat("a", maxIdempotencyKeyLength+1))
+	AddToken(ctx)
+	assert.Equal(t, http.StatusBadRequest, recorder.Code)
+	assert.Contains(t, recorder.Body.String(), `"code":"INVALID_ARGUMENT"`)
+}
+
+func TestAddTokenIdempotencyIsolatesByUser(t *testing.T) {
+	db := setupTokenControllerTestDB(t)
+	seedTestUser(t, db, 1)
+	seedTestUser(t, db, 2)
+
+	body := map[string]any{"name": "isolated-key", "expired_time": -1, "unlimited_quota": true}
+	create := func(userID int) *httptest.ResponseRecorder {
+		ctx, recorder := newAuthenticatedContext(t, http.MethodPost, "/api/token/", body, userID)
+		ctx.Request.Header.Set("Idempotency-Key", "shared-key-string")
+		AddToken(ctx)
+		return recorder
+	}
+	first := create(1)
+	second := create(2)
+	require.Equal(t, http.StatusOK, first.Code, first.Body.String())
+	require.Equal(t, http.StatusOK, second.Code, second.Body.String())
+
+	var firstResp, secondResp struct {
+		Data struct {
+			ID int `json:"id"`
+		} `json:"data"`
+	}
+	require.NoError(t, common.Unmarshal(first.Body.Bytes(), &firstResp))
+	require.NoError(t, common.Unmarshal(second.Body.Bytes(), &secondResp))
+	assert.NotEqual(t, firstResp.Data.ID, secondResp.Data.ID)
+
+	var tokenCount, recordCount int64
+	require.NoError(t, db.Model(&model.Token{}).Count(&tokenCount).Error)
+	require.NoError(t, db.Model(&model.TokenCreateIdempotency{}).Count(&recordCount).Error)
+	assert.EqualValues(t, 2, tokenCount)
+	assert.EqualValues(t, 2, recordCount)
+}
+
+func TestAddTokenIdempotencyResourceDeletedReturns409(t *testing.T) {
+	db := setupTokenControllerTestDB(t)
+	seedTestUser(t, db, 11)
+	body := map[string]any{"name": "then-deleted", "expired_time": -1, "unlimited_quota": true}
+
+	create := func(idempotencyKey string, requestBody any) *httptest.ResponseRecorder {
+		ctx, recorder := newAuthenticatedContext(t, http.MethodPost, "/api/token/", requestBody, 11)
+		ctx.Request.Header.Set("Idempotency-Key", idempotencyKey)
+		AddToken(ctx)
+		return recorder
+	}
+
+	first := create("deleted-resource-key", body)
+	require.Equal(t, http.StatusOK, first.Code, first.Body.String())
+
+	// Soft-delete the created token directly.
+	require.NoError(t, db.Where("user_id = ?", 11).Delete(&model.Token{}).Error)
+
+	second := create("deleted-resource-key", body)
+	require.Equal(t, http.StatusConflict, second.Code, second.Body.String())
+	assert.Contains(t, second.Body.String(), `"code":"IDEMPOTENCY_RESOURCE_DELETED"`)
+
+	// No new token must be minted; the soft-deleted row and the idempotency
+	// record must both remain.
+	var liveTokens, allTokens, records int64
+	require.NoError(t, db.Model(&model.Token{}).Where("user_id = ?", 11).Count(&liveTokens).Error)
+	require.NoError(t, db.Model(&model.Token{}).Unscoped().Where("user_id = ?", 11).Count(&allTokens).Error)
+	require.NoError(t, db.Model(&model.TokenCreateIdempotency{}).Where("user_id = ?", 11).Count(&records).Error)
+	assert.Zero(t, liveTokens, "no live token should be created by the replay")
+	assert.EqualValues(t, 1, allTokens, "the soft-deleted token row must remain")
+	assert.EqualValues(t, 1, records, "the idempotency record must be retained")
 }
 
 func TestGetAllTokensMasksKeyInResponse(t *testing.T) {

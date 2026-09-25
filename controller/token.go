@@ -1,6 +1,9 @@
 package controller
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
+	"errors"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -9,6 +12,7 @@ import (
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/i18n"
+	"github.com/QuantumNous/new-api/middleware"
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/service"
 	"github.com/QuantumNous/new-api/setting"
@@ -275,21 +279,64 @@ func GetTokenUsage(c *gin.Context) {
 	})
 }
 
+func tokenCreateDigest(value string) string {
+	digest := sha256.Sum256([]byte(value))
+	return hex.EncodeToString(digest[:])
+}
+
+const maxIdempotencyKeyLength = 128
+
+// tokenCreateHashInput is the explicit set of business fields that participate
+// in idempotency conflict detection. It must include every client-controlled
+// field that changes the meaning of "create this token"; server-generated
+// fields (Key, CreatedTime, AccessedTime) are intentionally omitted. AutoGroups
+// is included explicitly because model.Token.AutoGroups has json:"-" and would
+// otherwise be dropped from a direct Marshal.
+type tokenCreateHashInput struct {
+	Name               string  `json:"name"`
+	ExpiredTime        int64   `json:"expired_time"`
+	RemainQuota        int     `json:"remain_quota"`
+	UnlimitedQuota     bool    `json:"unlimited_quota"`
+	ModelLimitsEnabled bool    `json:"model_limits_enabled"`
+	ModelLimits        string  `json:"model_limits"`
+	AllowIps           *string `json:"allow_ips"`
+	Group              string  `json:"group"`
+	CrossGroupRetry    bool    `json:"cross_group_retry"`
+	AutoGroups         string  `json:"auto_groups"`
+}
+
+func buildTokenCreateHashInput(t *model.Token) tokenCreateHashInput {
+	return tokenCreateHashInput{
+		Name:               t.Name,
+		ExpiredTime:        t.ExpiredTime,
+		RemainQuota:        t.RemainQuota,
+		UnlimitedQuota:     t.UnlimitedQuota,
+		ModelLimitsEnabled: t.ModelLimitsEnabled,
+		ModelLimits:        t.ModelLimits,
+		AllowIps:           t.AllowIps,
+		Group:              t.Group,
+		CrossGroupRetry:    t.CrossGroupRetry,
+		AutoGroups:         t.AutoGroups,
+	}
+}
+
 func AddToken(c *gin.Context) {
 	request := tokenRequest{}
-	err := c.ShouldBindJSON(&request)
-	if err != nil {
+	if err := c.ShouldBindJSON(&request); err != nil {
 		common.ApiError(c, err)
 		return
 	}
 	token := request.Token
+	if strings.TrimSpace(token.Name) == "" {
+		common.ApiErrorI18n(c, i18n.MsgNameCannotBeEmpty)
+		return
+	}
 	if len(token.Name) > 50 {
 		common.ApiErrorI18n(c, i18n.MsgTokenNameTooLong)
 		return
 	}
 	params := tokenAuditParams(c)
 	params["name"] = token.Name
-	// 非无限额度时，检查额度值是否超出有效范围
 	if !token.UnlimitedQuota {
 		if token.RemainQuota < 0 {
 			common.ApiErrorI18n(c, i18n.MsgTokenQuotaNegative)
@@ -301,20 +348,17 @@ func AddToken(c *gin.Context) {
 			return
 		}
 	}
-	// 检查用户令牌数量是否已达上限
+
+	idempotencyKey := strings.TrimSpace(c.GetHeader("Idempotency-Key"))
+	if len(idempotencyKey) > maxIdempotencyKeyLength {
+		c.JSON(http.StatusBadRequest, gin.H{"success": false, "code": "INVALID_ARGUMENT", "message": common.TranslateMessage(c, i18n.MsgTokenIdempotencyKeyTooLong)})
+		return
+	}
+	if middleware.IsDesktopSession(c) && idempotencyKey == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"success": false, "code": "INVALID_ARGUMENT", "message": common.TranslateMessage(c, i18n.MsgTokenIdempotencyKeyRequired)})
+		return
+	}
 	maxTokens := operation_setting.GetMaxUserTokens()
-	count, err := model.CountUserTokens(c.GetInt("id"))
-	if err != nil {
-		common.ApiError(c, err)
-		return
-	}
-	if int(count) >= maxTokens {
-		c.JSON(http.StatusOK, gin.H{
-			"success": false,
-			"message": fmt.Sprintf("已达到最大令牌数量限制 (%d)", maxTokens),
-		})
-		return
-	}
 	if token.Group == "auto" {
 		if !setTokenAutoGroups(c, &token, request.AutoGroups.Groups) {
 			return
@@ -329,32 +373,66 @@ func AddToken(c *gin.Context) {
 		common.SysLog("failed to generate token key: " + err.Error())
 		return
 	}
+	now := common.GetTimestamp()
 	cleanToken := model.Token{
-		UserId:             c.GetInt("id"),
-		Name:               token.Name,
-		Key:                key,
-		CreatedTime:        common.GetTimestamp(),
-		AccessedTime:       common.GetTimestamp(),
-		ExpiredTime:        token.ExpiredTime,
-		RemainQuota:        token.RemainQuota,
-		UnlimitedQuota:     token.UnlimitedQuota,
-		ModelLimitsEnabled: token.ModelLimitsEnabled,
-		ModelLimits:        token.ModelLimits,
-		AllowIps:           token.AllowIps,
-		Group:              token.Group,
-		CrossGroupRetry:    token.CrossGroupRetry,
-		AutoGroups:         token.AutoGroups,
+		UserId: c.GetInt("id"), Name: token.Name, Key: key, CreatedTime: now, AccessedTime: now,
+		ExpiredTime: token.ExpiredTime, RemainQuota: token.RemainQuota, UnlimitedQuota: token.UnlimitedQuota,
+		ModelLimitsEnabled: token.ModelLimitsEnabled, ModelLimits: token.ModelLimits, AllowIps: token.AllowIps,
+		Group: token.Group, CrossGroupRetry: token.CrossGroupRetry, AutoGroups: token.AutoGroups,
 	}
-	err = cleanToken.Insert()
+	if idempotencyKey == "" {
+		count, err := model.CountUserTokens(cleanToken.UserId)
+		if err != nil {
+			common.ApiError(c, err)
+			return
+		}
+		if int(count) >= maxTokens {
+			c.JSON(http.StatusOK, gin.H{"success": false, "message": common.TranslateMessage(c, i18n.MsgTokenUserLimitReached, map[string]any{"Max": maxTokens})})
+			return
+		}
+		if err := cleanToken.Insert(); err != nil {
+			common.ApiError(c, err)
+			return
+		}
+		params["id"] = cleanToken.Id
+		common.SetContextKey(c, constant.ContextKeyTokenAuditSucceeded, true)
+		c.JSON(http.StatusOK, gin.H{"success": true, "message": ""})
+		return
+	}
+	requestPayload, err := common.Marshal(buildTokenCreateHashInput(&cleanToken))
 	if err != nil {
 		common.ApiError(c, err)
 		return
 	}
-	params["id"] = cleanToken.Id
+	created, _, err := model.CreateTokenIdempotent(
+		&cleanToken, c.FullPath(), tokenCreateDigest(idempotencyKey), tokenCreateDigest(string(requestPayload)), now, maxTokens,
+	)
+	if errors.Is(err, model.ErrTokenCreateIdempotencyConflict) {
+		c.JSON(http.StatusConflict, gin.H{"success": false, "code": "IDEMPOTENCY_CONFLICT", "message": common.TranslateMessage(c, i18n.MsgTokenIdempotencyConflict)})
+		return
+	}
+	if errors.Is(err, model.ErrTokenCreateIdempotencyResourceDeleted) {
+		// The idempotent record points at a token that has since been deleted.
+		// Do not mint a fresh credential: surface a 409. This returns before
+		// params["id"] is set and before ContextKeyTokenAuditSucceeded is
+		// flipped on, so the audit log does not record the retry as a creation.
+		c.JSON(http.StatusConflict, gin.H{"success": false, "code": "IDEMPOTENCY_RESOURCE_DELETED", "message": common.TranslateMessage(c, i18n.MsgTokenIdempotencyResourceDeleted)})
+		return
+	}
+	if errors.Is(err, model.ErrUserTokenLimit) {
+		c.JSON(http.StatusOK, gin.H{"success": false, "message": common.TranslateMessage(c, i18n.MsgTokenUserLimitReached, map[string]any{"Max": maxTokens})})
+		return
+	}
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	params["id"] = created.Id
 	common.SetContextKey(c, constant.ContextKeyTokenAuditSucceeded, true)
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,
 		"message": "",
+		"data":    gin.H{"id": created.Id, "token": buildMaskedTokenResponse(created)},
 	})
 }
 
