@@ -43,6 +43,16 @@ var turnstileSiteVerify = func(response, remoteIP string) error {
 
 var ErrTurnstileRejected = errors.New("turnstile token rejected")
 
+// SetTurnstileVerifierForTest replaces the Turnstile site verification function.
+// It is intended for integration tests only; production code must not call it.
+// The returned restore function must be called to put the production verifier
+// back in place.
+func SetTurnstileVerifierForTest(fn func(response, remoteIP string) error) func() {
+	original := turnstileSiteVerify
+	turnstileSiteVerify = fn
+	return func() { turnstileSiteVerify = original }
+}
+
 func ValidateTurnstileToken(response, remoteIP string) error {
 	if !common.TurnstileCheckEnabled {
 		return nil

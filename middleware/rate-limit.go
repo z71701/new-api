@@ -193,6 +193,7 @@ func DesktopAuthRateLimit() func(c *gin.Context) {
 		if requestID == "" {
 			requestID = common.NewRequestId()
 		}
+		c.Header("Cache-Control", "no-store")
 		c.JSON(http.StatusTooManyRequests, gin.H{
 			"success": false, "code": "AUTH_RATE_LIMITED", "message": http.StatusText(http.StatusTooManyRequests),
 			"request_id": requestID, "server_time": time.Now().Unix(), "data": nil,
