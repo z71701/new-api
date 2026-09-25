@@ -97,6 +97,13 @@ func UpdatePasskeyDomainOptions(values map[string]string, preview bool, confirma
 	passkeyOptionMutex.Lock()
 	defer passkeyOptionMutex.Unlock()
 	values = maps.Clone(values)
+	if value, changed := values["ServerAddress"]; changed {
+		normalized, err := system_setting.NormalizeServerAddress(value, common.DebugEnabled)
+		if err != nil {
+			return nil, err
+		}
+		values["ServerAddress"] = normalized
+	}
 	for key, value := range values {
 		if err := validateOptionValue(key, value); err != nil {
 			return nil, err

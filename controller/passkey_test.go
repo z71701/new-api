@@ -544,6 +544,9 @@ func TestPasskeyDefaultsDoNotRestrictUnrelatedServerAddressSetup(t *testing.T) {
 	settings := system_setting.GetPasskeySettings()
 	settings.Enabled, settings.RPID, settings.LegacyRPIDs, settings.Origins = false, "", "", ""
 	system_setting.ServerAddress = ""
+	previousDebug := common.DebugEnabled
+	common.DebugEnabled = true
+	t.Cleanup(func() { common.DebugEnabled = previousDebug })
 	require.NoError(t, model.UpdateOption("ServerAddress", "http://127.0.0.1:3000"))
 	assert.Equal(t, "http://127.0.0.1:3000", system_setting.ServerAddress)
 	assert.Empty(t, settings.RPID)
