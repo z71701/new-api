@@ -54,6 +54,11 @@ jobs:
         working-directory: relaykit
         run: go build ./...
 
+      - name: Set up Node.js for crypto interop tests
+        uses: actions/setup-node@60edb5dd545a775178f52524783378180af0d1f8 # v4.0.2
+        with:
+          node-version: '22'
+
       - name: Test root and relaykit modules
         run: make test
 
@@ -84,6 +89,7 @@ jobs:
     env:
       GOWORK: 'off'
       TEST_MYSQL_DSN: root:root@tcp(127.0.0.1:3306)/newapi_test?parseTime=true&loc=UTC
+      TEST_SECURITY_DIALECT: mysql
 
     steps:
       - name: Checkout
@@ -110,6 +116,9 @@ jobs:
 
       - name: Run MySQL cross-process idempotency test
         run: go test ./model/ -run "TestCreateTokenIdempotentCrossProcessRace/mysql" -v -count=1
+
+      - name: Run desktop auth acceptance tests on MySQL
+        run: go test ./controller/ -run "TestDesktopAcceptance" -v -count=1
 
   database-postgresql:
     name: PostgreSQL ${{ matrix.version }} compatibility
@@ -138,6 +147,7 @@ jobs:
     env:
       GOWORK: 'off'
       TEST_POSTGRES_DSN: postgres://postgres:postgres@127.0.0.1:5432/newapi_test?sslmode=disable
+      TEST_SECURITY_DIALECT: postgres
 
     steps:
       - name: Checkout
@@ -164,6 +174,9 @@ jobs:
 
       - name: Run PostgreSQL cross-process idempotency test
         run: go test ./model/ -run "TestCreateTokenIdempotentCrossProcessRace/postgres" -v -count=1
+
+      - name: Run desktop auth acceptance tests on PostgreSQL
+        run: go test ./controller/ -run "TestDesktopAcceptance" -v -count=1
 
   frontend:
     name: Frontend typecheck and test
