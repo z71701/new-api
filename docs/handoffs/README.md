@@ -28,7 +28,24 @@
 ## 规则
 1. 只记录本仓产出的交接物；不记录其他仓的动态状态。
 2. 所有 URL 必须含 commit SHA，不使用 `main` 分支浮动引用。
-3. 校验：`python scripts/aliai_validate.py <repo-root>`。
+3. 校验：`python scripts/aliai_validate.py <repo-root>`（CI 见 `.github/workflows/aliai-governance.yml`）。
 4. 命名陷阱：`pr-d-desktop-e2e-acceptance`（PR #8 E2E 契约）≠ Roadmap PR-D（Manifest/Dashboard）。
+
+## v1.1 生命周期字段（新增，v1.0 字段保留）
+| 字段 | 说明 |
+|---|---|
+| `lifecycle_state` | 与 `docs/status.yml` 的 `lifecycle.current_state` 对应；取值受本仓 role 限制 |
+| `evidence_phase` | `pre_merge` / `post_merge` / `post_build` / `post_deploy` / `post_acceptance` |
+
+规则：
+- **最终 handoff**（`lifecycle_state` ∈ implemented/verified/accepted/released/deployed）只在 **post-merge follow-up PR** 中产生，`producer_commit` 必须是已存在于远端的 merge SHA。
+- **feature candidate PR** 不得生成 `lifecycle_state >= implemented` 的 handoff（validator 以 `--pr-kind feature_candidate` 拦截）。
+- `producer_commit` 远端存在性：在线用 `git cat-file -t <sha>` 校验；离线打印 `REMOTE_COMMIT_CHECK_SKIPPED_OFFLINE` WARNING（降级通过，不伪造通过）。
+
+### 鸡蛋问题（chicken-and-egg）解法
+问题：feature candidate PR 里还没有 merge SHA，但 handoff 又要求 `producer_commit` 是 40-hex 且远端存在。
+解法（两阶段 PR）：
+1. **feature candidate PR**：`lifecycle_state=candidate`，`evidence_phase=pre_merge`，`producer_commit` 填本分支 HEAD（已 push 即存在于远端）。此时不产出最终 handoff。
+2. **post-merge follow-up PR**（merge agent 在合并后创建的独立 PR）：把 handoff 升级为 `lifecycle_state=implemented`（或更高），`evidence_phase=post_merge`，`producer_commit` 填入真实 merge SHA。这样永远不需要在合并前预知 merge SHA。
 
 > 协作者三仓治理说明见 [Yohalloo/aliai-desktop PR #3](https://github.com/Yohalloo/aliai-desktop/pull/3)（合并后更新为 main 固定 commit URL）。

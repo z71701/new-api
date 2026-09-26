@@ -1,0 +1,32 @@
+# ALIAI repository lifecycle status — machine authority.
+# Consumed by scripts/aliai_validate.py. Schema version "1.1".
+# Human view: docs/STATUS.md (must carry a matching status-sync marker).
+schema_version: "1.1"
+repo:
+  name: "z71701/new-api"
+  role: backend
+lifecycle:
+  current_state: released
+  previous_state: verified
+  updated_at: "2026-09-26T00:00:00Z"
+  source_commit: "598e708adeb15c6f5ad8dda24f448ae0a024238a"
+  evidence: "GitHub Actions CI green on PR #9; image aliai/v1.0.0-rc.40.3 built and digest recorded"
+artifact:
+  name: "desktop-auth-api"
+  version: "1.0"
+tests:
+  - level: lint
+    status: passed
+    evidence: "GitHub Actions CI (go vet)"
+  - level: build
+    status: passed
+    evidence: "GitHub Actions CI (go build)"
+  - level: ci
+    status: passed
+    evidence: "GitHub Actions CI (go test; MySQL 5.7/8.0; PostgreSQL 9.6/16)"
+blockers:
+  - "Roadmap PR-D (Manifest/Dashboard) not started"
+  - "Naming trap: branch pr-d-desktop-e2e-acceptance (PR #8) != Roadmap PR-D (Manifest/Dashboard)"
+backend:
+  image_tag: "aliai/v1.0.0-rc.40.3"
+  image_digest: "sha256:ae5b2f699558611bea6ea50a5ac1865b79e133d1ebf7877f9e9a6cf869118593"

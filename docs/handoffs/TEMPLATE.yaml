@@ -24,3 +24,6 @@ downstream_actions:                       # what consumers must do
     action: "consume contract at pinned commit; run integration acceptance"
     required: true
 blockers: []                              # list of strings, empty if none
+# --- v1.1 lifecycle fields (required; v1.0 fields above preserved) ---
+lifecycle_state: "candidate"              # planned|candidate|implemented|verified|released|deployed|accepted|blocked|failed|rolled_back|superseded  (must match this repo's role-allowed states)
+evidence_phase: "pre_merge"               # pre_merge|post_merge|post_build|post_deploy|post_acceptance
