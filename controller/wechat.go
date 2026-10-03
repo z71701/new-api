@@ -64,6 +64,7 @@ func WeChatAuth(c *gin.Context) {
 		return
 	}
 	code := c.Query("code")
+	registrationCode := c.GetHeader("X-Registration-Code")
 	wechatId, err := getWeChatIdByCode(code)
 	if err != nil {
 		c.JSON(http.StatusOK, gin.H{
@@ -93,12 +94,21 @@ func WeChatAuth(c *gin.Context) {
 		}
 	} else {
 		if common.RegisterEnabled {
+			var consumedRegistrationCode *service.ConsumedRegistrationCode
+			if common.RegistrationCodeEnabled {
+				var ok bool
+				consumedRegistrationCode, ok = consumeRegistrationCode(c, registrationCode)
+				if !ok {
+					return
+				}
+			}
 			user.Username = "wechat_" + strconv.Itoa(model.GetMaxUserId()+1)
 			user.DisplayName = "WeChat User"
 			user.Role = common.RoleCommonUser
 			user.Status = common.UserStatusEnabled
 
 			if err := user.Insert(0); err != nil {
+				restoreRegistrationCode(c, consumedRegistrationCode)
 				c.JSON(http.StatusOK, gin.H{
 					"success": false,
 					"message": err.Error(),

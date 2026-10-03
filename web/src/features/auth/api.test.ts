@@ -55,7 +55,8 @@ test.each([true, false])(
     const { result } = renderHook(() =>
       useOAuthLogin(
         { telegram_oauth: true, telegram_oauth_configured: configured },
-        '/console/personal'
+        '/console/personal',
+        'REG-2345-6789-ABCD-EFGH'
       )
     )
     await act(() => result.current.handleTelegramLogin())
@@ -66,7 +67,11 @@ test.each([true, false])(
       ])
       expect(post).toHaveBeenCalledWith(
         '/api/oauth/state',
-        expect.objectContaining({ provider: 'telegram', intent: 'login' }),
+        expect.objectContaining({
+          provider: 'telegram',
+          intent: 'login',
+          registration_code: 'REG-2345-6789-ABCD-EFGH',
+        }),
         expect.anything()
       )
       expect(open).toHaveBeenCalledWith(

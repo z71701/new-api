@@ -92,6 +92,7 @@ type User struct {
 	WeChatId             string                     `json:"wechat_id" gorm:"column:wechat_id;index"`
 	TelegramId           string                     `json:"telegram_id" gorm:"column:telegram_id;index"`
 	VerificationCode     string                     `json:"verification_code" gorm:"-:all"`                         // this field is only for Email verification, don't save it to database!
+	RegistrationCode     string                     `json:"registration_code" gorm:"-:all"`                         // this field is only for one-time registration authorization, don't save it to database!
 	AccessToken          *string                    `json:"-" gorm:"type:char(32);column:access_token;uniqueIndex"` // this token is for system management
 	AccessTokenCreatedAt *int64                     `json:"-" gorm:"type:bigint;column:access_token_created_at"`
 	Quota                int                        `json:"quota" gorm:"type:int;default:0"`
