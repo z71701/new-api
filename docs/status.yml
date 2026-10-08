@@ -8,25 +8,28 @@ repo:
 lifecycle:
   current_state: released
   previous_state: verified
-  updated_at: "2026-10-08T02:58:32Z"
-  source_commit: "598e708adeb15c6f5ad8dda24f448ae0a024238a"
-  evidence: "Existing backend release baseline remains authoritative; registration-code-api is tracked separately as a feature candidate handoff"
+  updated_at: "2026-10-08T11:15:48Z"
+  source_commit: "1b51fc3e9ac2acb8e6dbb943780ac451d2c81619"
+  evidence: "Merged-source CI passed: https://github.com/z71701/new-api/actions/runs/37767514653; image build and publication succeeded: https://github.com/z71701/new-api/actions/runs/37767539410; image-reference artifact matches the GHCR tag digest verified through anonymous HEAD"
 artifact:
-  name: "desktop-auth-api"
-  version: "1.0"
+  name: "registration-code-api"
+  version: "aliai/v1.0.0-rc.40.4"
 tests:
   - level: lint
     status: passed
-    evidence: "GitHub Actions CI (go vet)"
+    evidence: "https://github.com/z71701/new-api/actions/runs/37767514653 (go vet on merged main)"
   - level: build
     status: passed
-    evidence: "GitHub Actions CI (go build)"
+    evidence: "https://github.com/z71701/new-api/actions/runs/37767514653 (root and independent relaykit builds on merged main)"
   - level: ci
     status: passed
-    evidence: "GitHub Actions CI (go test; MySQL 5.7/8.0; PostgreSQL 9.6/16)"
+    evidence: "https://github.com/z71701/new-api/actions/runs/37767514653 (go test; MySQL 5.7/8.0; PostgreSQL 9.6/16; frontend typecheck/test on merged main)"
+  - level: build
+    status: passed
+    evidence: "https://github.com/z71701/new-api/actions/runs/37767539410 (Linux/amd64 image built and pushed; artifact 11545617985 digest matches anonymous GHCR manifest HEAD)"
 blockers:
   - "Roadmap PR-D (Manifest/Dashboard) not started"
-  - "Registration code PR #12: expiry/cancellation compensation fixes locally verified; pending review and merge"
 backend:
-  image_tag: "aliai/v1.0.0-rc.40.3"
-  image_digest: "sha256:ae5b2f699558611bea6ea50a5ac1865b79e133d1ebf7877f9e9a6cf869118593"
+  image_tag: "aliai/v1.0.0-rc.40.4"
+  image_digest: "sha256:bf743abfeac3cbcca0bd64fdf1ba4803f504bbc5bd7674537ce9cda2b3725925"
+  image_reference: "ghcr.io/z71701/new-api@sha256:bf743abfeac3cbcca0bd64fdf1ba4803f504bbc5bd7674537ce9cda2b3725925"
