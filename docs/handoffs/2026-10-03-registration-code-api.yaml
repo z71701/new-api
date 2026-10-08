@@ -1,0 +1,48 @@
+schema_version: "1.1"
+producer_repo: "z71701/new-api"
+producer_commit: "1aea8b3b34781d635f0ef34a807f5ed350c9bda9"
+artifact: "registration-code-api"
+version: "candidate"
+change_type: "contract_change"
+compatibility: "conditional"
+summary: "Adds optional Redis-backed one-time registration codes across public account creation paths; failure compensation preserves the Redis absolute expiry and uses an independent 3-second context."
+created_at: "2026-10-03"
+updated_at: "2026-10-08"
+contract_refs:
+  - url: "https://github.com/z71701/new-api/blob/1aea8b3b34781d635f0ef34a807f5ed350c9bda9/router/api-router.go"
+    kind: "api-route"
+  - url: "https://github.com/z71701/new-api/blob/1aea8b3b34781d635f0ef34a807f5ed350c9bda9/service/registration_code.go"
+    kind: "service-contract"
+tests:
+  - name: "Affected Go package tests"
+    status: "passed"
+    evidence_url: ""
+  - name: "Registration code expiry/cancellation regressions and targeted race tests"
+    status: "passed"
+    evidence_url: ""
+    command: "go test -race ./service ./controller -run '^TestRegistrationCode' -count=1"
+  - name: "Affected package static checks"
+    status: "passed"
+    evidence_url: ""
+    command: "go vet ./service ./controller ./middleware ./router"
+  - name: "Real Redis 6.2.24 Lua integration: original expiry, no overwrite, no expired restore"
+    status: "passed"
+    evidence_url: ""
+  - name: "Frontend auth tests and typecheck (original feature validation; no frontend changes in this fix)"
+    status: "passed"
+    evidence_url: ""
+runtime_switches:
+  registration_code_enabled: false
+  registration_code_ttl_seconds: 1800
+  registration_code_api_key_required_when_enabled: true
+downstream_actions:
+  - repo: "Yohalloo/aliai-desktop"
+    action: "If desktop registration is exposed, add registration_code input and consume the pinned backend contract."
+    required: false
+  - repo: "z71701/aliai-deploy"
+    action: "When enabling registration codes, configure shared Redis and a secret REGISTRATION_CODE_API_KEY."
+    required: true
+blockers:
+  - "Pending PR review and merge"
+lifecycle_state: "candidate"
+evidence_phase: "pre_merge"

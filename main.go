@@ -351,6 +351,10 @@ func InitResources() error {
 	if err != nil {
 		return err
 	}
+	if err = service.ValidateRegistrationCodeConfig(); err != nil {
+		common.FatalLog("invalid registration code configuration: " + err.Error())
+		return err
+	}
 
 	perfmetrics.Init()
 

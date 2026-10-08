@@ -9,6 +9,8 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -21,14 +23,98 @@ import (
 	"github.com/QuantumNous/new-api/oauth"
 	"github.com/QuantumNous/new-api/service"
 	"github.com/QuantumNous/new-api/setting/system_setting"
+	"github.com/alicebob/miniredis/v2"
 	"github.com/fxamacker/cbor/v2"
 	"github.com/gin-gonic/gin"
 	"github.com/glebarez/sqlite"
+	"github.com/go-redis/redis/v8"
 	"github.com/pquerna/otp/totp"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"gorm.io/gorm"
 )
+
+func TestRegistrationCodeCompensationAfterRequestEnds(t *testing.T) {
+	for _, reason := range []string{"cancelled", "deadline exceeded"} {
+		t.Run(reason, func(t *testing.T) {
+			server := miniredis.RunT(t)
+			client := redis.NewClient(&redis.Options{Addr: server.Addr()})
+			previousClient, previousEnabled := common.RDB, common.RegistrationCodeEnabled
+			common.RDB, common.RegistrationCodeEnabled = client, true
+			t.Cleanup(func() {
+				common.RDB, common.RegistrationCodeEnabled = previousClient, previousEnabled
+				require.NoError(t, client.Close())
+			})
+			codes, err := service.GenerateRegistrationCodes(context.Background(), 1, time.Minute)
+			require.NoError(t, err)
+			consumed, err := service.ConsumeRegistrationCode(context.Background(), codes[0])
+			require.NoError(t, err)
+
+			ctx, cancel := context.WithCancel(context.Background())
+			cancel()
+			if reason == "deadline exceeded" {
+				ctx, cancel = context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
+				defer cancel()
+			}
+			require.Error(t, ctx.Err())
+			c, _ := gin.CreateTestContext(httptest.NewRecorder())
+			c.Request = httptest.NewRequest(http.MethodPost, "/api/user/register", nil).WithContext(ctx)
+			restoreRegistrationCode(c, consumed)
+			_, err = service.ConsumeRegistrationCode(context.Background(), codes[0])
+			require.NoError(t, err, "a failed registration must be retryable despite request cancellation")
+			_, err = service.ConsumeRegistrationCode(context.Background(), codes[0])
+			assert.ErrorIs(t, err, service.ErrRegistrationCodeInvalid)
+		})
+	}
+}
+
+func TestRegistrationCodeCompensationBoundsRedisIO(t *testing.T) {
+	// A connected Redis endpoint accepts commands but never replies. Its client
+	// timeouts are intentionally longer than the compensation budget.
+	clientConn, serverConn := net.Pipe()
+	t.Cleanup(func() { _ = serverConn.Close() })
+	client := redis.NewClient(&redis.Options{
+		Dialer:     func(context.Context, string, string) (net.Conn, error) { return clientConn, nil },
+		MaxRetries: -1, ReadTimeout: time.Minute, WriteTimeout: time.Minute,
+	})
+	previousClient := common.RDB
+	common.RDB = client
+	t.Cleanup(func() {
+		common.RDB = previousClient
+		_ = client.Close()
+	})
+	received := make(chan struct{})
+	go func() {
+		buffer := make([]byte, 4096)
+		if _, err := serverConn.Read(buffer); err == nil {
+			close(received)
+		}
+		_, _ = io.Copy(io.Discard, serverConn)
+	}()
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c.Request = httptest.NewRequest(http.MethodPost, "/api/user/register", nil)
+	done := make(chan struct{})
+	go func() {
+		restoreRegistrationCode(c, &service.ConsumedRegistrationCode{
+			Digest: strings.Repeat("a", 64), ExpiresAtUnixMilli: time.Now().Add(time.Minute).UnixMilli(),
+		})
+		close(done)
+	}()
+	select {
+	case <-received:
+	case <-time.After(5 * time.Second):
+		_ = serverConn.Close()
+		<-done
+		t.Fatal("compensation did not reach Redis")
+	}
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		_ = serverConn.Close()
+		<-done
+		t.Fatal("compensation exceeded its independent timeout")
+	}
+}
 
 func newSecurityLoginPasskey(t *testing.T, userID int) *ecdsa.PrivateKey {
 	t.Helper()

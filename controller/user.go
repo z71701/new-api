@@ -271,6 +271,14 @@ func Register(c *gin.Context) {
 		common.ApiErrorI18n(c, i18n.MsgUserExists)
 		return
 	}
+	var consumedRegistrationCode *service.ConsumedRegistrationCode
+	if common.RegistrationCodeEnabled {
+		var ok bool
+		consumedRegistrationCode, ok = consumeRegistrationCode(c, user.RegistrationCode)
+		if !ok {
+			return
+		}
+	}
 	affCode := user.AffCode // this code is the inviter's code, not the user's own code
 	inviterId, _ := model.GetUserIdByAffCode(affCode)
 	cleanUser := model.User{
@@ -284,6 +292,7 @@ func Register(c *gin.Context) {
 		cleanUser.Email = user.Email
 	}
 	if err := cleanUser.Insert(inviterId); err != nil {
+		restoreRegistrationCode(c, consumedRegistrationCode)
 		if errors.Is(err, model.ErrEmailAlreadyTaken) {
 			common.ApiErrorI18n(c, i18n.MsgUserEmailAlreadyTaken)
 			return

@@ -23,19 +23,21 @@ import (
 const oauthAuthFlowTTL = 10 * time.Minute
 
 type oauthStateRequest struct {
-	Provider string          `json:"provider"`
-	Intent   string          `json:"intent"`
-	Aff      string          `json:"aff,omitempty"`
-	Scope    string          `json:"scope,omitempty"`
-	Context  json.RawMessage `json:"context,omitempty"`
+	Provider         string          `json:"provider"`
+	Intent           string          `json:"intent"`
+	Aff              string          `json:"aff,omitempty"`
+	RegistrationCode string          `json:"registration_code,omitempty"`
+	Scope            string          `json:"scope,omitempty"`
+	Context          json.RawMessage `json:"context,omitempty"`
 }
 
 type oauthFlowPayload struct {
-	AffiliateCode   string                         `json:"affiliate_code,omitempty"`
-	Verification    *service.OAuthVerificationFlow `json:"verification,omitempty"`
-	Telegram        *oauth.TelegramOAuthFlow       `json:"telegram,omitempty"`
-	SessionIdentity *service.AuthIdentity          `json:"session_identity,omitempty"`
-	Authorization   *model.AuthFlowAuthorization   `json:"authorization,omitempty"`
+	AffiliateCode          string                         `json:"affiliate_code,omitempty"`
+	RegistrationCodeDigest string                         `json:"registration_code_digest,omitempty"`
+	Verification           *service.OAuthVerificationFlow `json:"verification,omitempty"`
+	Telegram               *oauth.TelegramOAuthFlow       `json:"telegram,omitempty"`
+	SessionIdentity        *service.AuthIdentity          `json:"session_identity,omitempty"`
+	Authorization          *model.AuthFlowAuthorization   `json:"authorization,omitempty"`
 }
 
 // providerParams returns map with Provider key for i18n templates
@@ -53,17 +55,34 @@ func GenerateOAuthCode(c *gin.Context) {
 	request.Provider = strings.TrimSpace(request.Provider)
 	request.Intent = strings.TrimSpace(request.Intent)
 	request.Aff = strings.TrimSpace(request.Aff)
+	request.RegistrationCode = strings.TrimSpace(request.RegistrationCode)
 	if oauth.GetProvider(request.Provider) == nil ||
 		(request.Intent != model.AuthFlowIntentLogin && request.Intent != model.AuthFlowIntentBind && request.Intent != model.AuthFlowIntentVerify) ||
 		len(request.Aff) > 32 ||
-		(request.Intent != model.AuthFlowIntentLogin && request.Aff != "") ||
+		(request.Intent != model.AuthFlowIntentLogin && (request.Aff != "" || request.RegistrationCode != "")) ||
 		(request.Intent != model.AuthFlowIntentVerify && (request.Scope != "" || len(request.Context) != 0)) {
 		common.ApiErrorI18n(c, i18n.MsgInvalidParams)
 		return
 	}
+	registrationCodeDigest := ""
+	if request.RegistrationCode != "" {
+		if !common.RegistrationCodeEnabled {
+			common.ApiErrorI18n(c, i18n.MsgInvalidParams)
+			return
+		}
+		var err error
+		registrationCodeDigest, err = service.RegistrationCodeDigest(request.RegistrationCode)
+		if err != nil {
+			common.ApiErrorI18n(c, i18n.MsgRegistrationCodeInvalid)
+			return
+		}
+	}
 	userID := 0
 	sessionID := ""
-	flowPayload := oauthFlowPayload{AffiliateCode: request.Aff}
+	flowPayload := oauthFlowPayload{
+		AffiliateCode:          request.Aff,
+		RegistrationCodeDigest: registrationCodeDigest,
+	}
 	bindingStarted := false
 	if request.Provider == "telegram" {
 		telegramFlow, err := oauth.NewTelegramOAuthFlow()
@@ -322,10 +341,13 @@ func handleOAuthLogin(c *gin.Context, provider oauth.Provider, oauthUser *oauth.
 		writeSecurityOperationError(c, err)
 		return
 	}
-	user, migration, err := findOrCreateOAuthUser(c, provider, oauthUser, token, payload.AffiliateCode)
+	user, migration, err := findOrCreateOAuthUser(c, provider, oauthUser, token, payload.AffiliateCode, payload.RegistrationCodeDigest)
 	if err != nil {
 		if errors.Is(err, model.ErrEmailAlreadyTaken) {
 			common.ApiErrorI18n(c, i18n.MsgUserEmailAlreadyTaken)
+			return
+		}
+		if errors.Is(err, service.ErrRegistrationCodeInvalid) {
 			return
 		}
 		switch err.(type) {
@@ -406,7 +428,7 @@ func handleOAuthBind(c *gin.Context, providerName string, provider oauth.Provide
 // findOrCreateOAuthUser finds the existing user or creates a new one. For a
 // legacy GitHub binding that still waits for the login verification, it also
 // returns the rewrite to carry into the challenge.
-func findOrCreateOAuthUser(c *gin.Context, provider oauth.Provider, oauthUser *oauth.OAuthUser, token *oauth.OAuthToken, affiliateCode string) (*model.User, *service.LegacyGitHubMigration, error) {
+func findOrCreateOAuthUser(c *gin.Context, provider oauth.Provider, oauthUser *oauth.OAuthUser, token *oauth.OAuthToken, affiliateCode string, registrationCodeDigest string) (*model.User, *service.LegacyGitHubMigration, error) {
 	user := &model.User{}
 	if provider.ProviderUserIDColumn() == "telegram_id" {
 		err := provider.FillUserByProviderID(user, oauthUser.ProviderUserID)
@@ -527,6 +549,19 @@ func findOrCreateOAuthUser(c *gin.Context, provider oauth.Provider, oauthUser *o
 		inviterId, _ = model.GetUserIdByAffCode(affiliateCode)
 	}
 
+	var consumedRegistrationCode *service.ConsumedRegistrationCode
+	if common.RegistrationCodeEnabled {
+		if registrationCodeDigest == "" {
+			common.ApiErrorI18n(c, i18n.MsgRegistrationCodeInvalid)
+			return nil, nil, service.ErrRegistrationCodeInvalid
+		}
+		var ok bool
+		consumedRegistrationCode, ok = consumeRegistrationCodeDigest(c, registrationCodeDigest)
+		if !ok {
+			return nil, nil, service.ErrRegistrationCodeInvalid
+		}
+	}
+
 	// Use transaction to ensure user creation and OAuth binding are atomic
 	if genericProvider, ok := provider.(*oauth.GenericOAuthProvider); ok {
 		// Custom provider: create user and binding in a transaction
@@ -549,6 +584,7 @@ func findOrCreateOAuthUser(c *gin.Context, provider oauth.Provider, oauthUser *o
 			return nil
 		})
 		if err != nil {
+			restoreRegistrationCode(c, consumedRegistrationCode)
 			return nil, nil, err
 		}
 
@@ -578,6 +614,7 @@ func findOrCreateOAuthUser(c *gin.Context, provider oauth.Provider, oauthUser *o
 			return nil
 		})
 		if err != nil {
+			restoreRegistrationCode(c, consumedRegistrationCode)
 			return nil, nil, err
 		}
 

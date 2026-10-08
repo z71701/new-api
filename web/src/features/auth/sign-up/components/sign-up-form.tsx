@@ -92,6 +92,7 @@ export function SignUpForm({
     resolver: zodResolver(registerFormSchema),
     defaultValues: {
       username: '',
+      registrationCode: '',
       email: '',
       password: '',
       confirmPassword: '',
@@ -99,6 +100,10 @@ export function SignUpForm({
   })
 
   const emailValue = form.watch('email')
+  const registrationCode = form.watch('registrationCode')
+  const registrationCodeRequired = Boolean(
+    status?.registration_code_enabled ?? status?.data?.registration_code_enabled
+  )
   const emailVerificationRequired = !!status?.email_verification
   const hasUserAgreement = Boolean(status?.user_agreement_enabled)
   const hasPrivacyPolicy = Boolean(status?.privacy_policy_enabled)
@@ -145,6 +150,13 @@ export function SignUpForm({
       return
     }
 
+    if (registrationCodeRequired && !data.registrationCode?.trim()) {
+      form.setError('registrationCode', {
+        message: t('Please enter your registration code'),
+      })
+      return
+    }
+
     // Validate email verification if required
     if (emailVerificationRequired) {
       if (!data.email) {
@@ -164,6 +176,7 @@ export function SignUpForm({
       const res = await register({
         username: data.username,
         password: data.password,
+        registration_code: data.registrationCode?.trim() || undefined,
         email: data.email || undefined,
         verification_code: verificationCode || undefined,
         aff_code: getAffiliateCode(),
@@ -217,7 +230,7 @@ export function SignUpForm({
 
     setIsWeChatSubmitting(true)
     try {
-      const res = await wechatLoginByCode(wechatCode)
+      const res = await wechatLoginByCode(wechatCode, registrationCode)
       if (res?.success) {
         handleWeChatDialogChange(false)
         if (await handleLoginResult(res.data)) {
@@ -265,6 +278,27 @@ export function SignUpForm({
             </FormItem>
           )}
         />
+
+        {/* Registration Code Field */}
+        {registrationCodeRequired && (
+          <FormField
+            control={form.control}
+            name='registrationCode'
+            render={({ field }) => (
+              <FormItem>
+                <FormLabel>{t('Registration code')}</FormLabel>
+                <FormControl>
+                  <Input
+                    placeholder={t('Enter your registration code')}
+                    autoComplete='one-time-code'
+                    {...field}
+                  />
+                </FormControl>
+                <FormMessage />
+              </FormItem>
+            )}
+          />
+        )}
 
         {/* Password Field */}
         <FormField
@@ -374,6 +408,7 @@ export function SignUpForm({
           className='mt-2 w-full justify-center gap-2'
           disabled={
             isLoading ||
+            (registrationCodeRequired && !registrationCode?.trim()) ||
             (requiresLegalConsent && !agreedToLegal) ||
             !turnstileReady
           }
@@ -385,7 +420,12 @@ export function SignUpForm({
         {oauthRegisterEnabled && (
           <OAuthProviders
             status={status}
-            disabled={isLoading || (requiresLegalConsent && !agreedToLegal)}
+            registrationCode={registrationCode}
+            disabled={
+              isLoading ||
+              (registrationCodeRequired && !registrationCode?.trim()) ||
+              (requiresLegalConsent && !agreedToLegal)
+            }
             onWeChatLogin={hasWeChatLogin ? handleOpenWeChatDialog : undefined}
             isWeChatLoading={isWeChatSubmitting}
             className='pt-2'
