@@ -14,6 +14,9 @@ contract_refs:
   - url: "https://github.com/z71701/new-api/blob/1b51fc3e9ac2acb8e6dbb943780ac451d2c81619/service/registration_code.go"
     kind: "service-contract"
 tests:
+  - name: "Tag source tests, GHCR image publication, and anonymous manifest digest verification"
+    status: "passed"
+    evidence_url: "https://github.com/z71701/new-api/actions/runs/37767539410"
   - name: "Merged-source CI and database compatibility matrix"
     status: "passed"
     evidence_url: "https://github.com/z71701/new-api/actions/runs/37767514653"
@@ -48,7 +51,10 @@ downstream_actions:
   - repo: "z71701/aliai-deploy"
     action: "When enabling registration codes, configure shared Redis and a secret REGISTRATION_CODE_API_KEY."
     required: true
-blockers:
-  - "Image publication pending: https://github.com/z71701/new-api/actions/runs/37767539410"
-lifecycle_state: "verified"
+blockers: []
+lifecycle_state: "released"
 evidence_phase: "post_build"
+backend:
+  image_tag: "aliai/v1.0.0-rc.40.4"
+  image_digest: "sha256:bf743abfeac3cbcca0bd64fdf1ba4803f504bbc5bd7674537ce9cda2b3725925"
+  image_reference: "ghcr.io/z71701/new-api@sha256:bf743abfeac3cbcca0bd64fdf1ba4803f504bbc5bd7674537ce9cda2b3725925"

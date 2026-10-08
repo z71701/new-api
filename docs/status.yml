@@ -6,11 +6,11 @@ repo:
   name: "z71701/new-api"
   role: backend
 lifecycle:
-  current_state: verified
-  previous_state: implemented
-  updated_at: "2026-10-08T11:13:56Z"
+  current_state: released
+  previous_state: verified
+  updated_at: "2026-10-08T11:15:48Z"
   source_commit: "1b51fc3e9ac2acb8e6dbb943780ac451d2c81619"
-  evidence: "Merged-source CI passed: https://github.com/z71701/new-api/actions/runs/37767514653; tag source tests passed: https://github.com/z71701/new-api/actions/runs/37767539410; image publication pending"
+  evidence: "Merged-source CI passed: https://github.com/z71701/new-api/actions/runs/37767514653; image build and publication succeeded: https://github.com/z71701/new-api/actions/runs/37767539410; image-reference artifact matches the GHCR tag digest verified through anonymous HEAD"
 artifact:
   name: "registration-code-api"
   version: "aliai/v1.0.0-rc.40.4"
@@ -24,10 +24,12 @@ tests:
   - level: ci
     status: passed
     evidence: "https://github.com/z71701/new-api/actions/runs/37767514653 (go test; MySQL 5.7/8.0; PostgreSQL 9.6/16; frontend typecheck/test on merged main)"
+  - level: build
+    status: passed
+    evidence: "https://github.com/z71701/new-api/actions/runs/37767539410 (Linux/amd64 image built and pushed; artifact 11545617985 digest matches anonymous GHCR manifest HEAD)"
 blockers:
   - "Roadmap PR-D (Manifest/Dashboard) not started"
-  - "New image publication pending: https://github.com/z71701/new-api/actions/runs/37767539410"
 backend:
-  # Last published baseline; not evidence that the new feature is released.
-  image_tag: "aliai/v1.0.0-rc.40.3"
-  image_digest: "sha256:ae5b2f699558611bea6ea50a5ac1865b79e133d1ebf7877f9e9a6cf869118593"
+  image_tag: "aliai/v1.0.0-rc.40.4"
+  image_digest: "sha256:bf743abfeac3cbcca0bd64fdf1ba4803f504bbc5bd7674537ce9cda2b3725925"
+  image_reference: "ghcr.io/z71701/new-api@sha256:bf743abfeac3cbcca0bd64fdf1ba4803f504bbc5bd7674537ce9cda2b3725925"
