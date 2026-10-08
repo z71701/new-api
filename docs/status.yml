@@ -6,24 +6,24 @@ repo:
   name: "z71701/new-api"
   role: backend
 lifecycle:
-  current_state: implemented
-  previous_state: candidate
-  updated_at: "2026-10-08T11:05:20Z"
+  current_state: verified
+  previous_state: implemented
+  updated_at: "2026-10-08T11:13:56Z"
   source_commit: "1b51fc3e9ac2acb8e6dbb943780ac451d2c81619"
-  evidence: "Registration-code-api candidate merged in PR #12; https://github.com/z71701/new-api/pull/12; tag aliai/v1.0.0-rc.40.4 points to the merge commit; image build pending"
+  evidence: "Merged-source CI passed: https://github.com/z71701/new-api/actions/runs/37767514653; tag source tests passed: https://github.com/z71701/new-api/actions/runs/37767539410; image publication pending"
 artifact:
   name: "registration-code-api"
   version: "aliai/v1.0.0-rc.40.4"
 tests:
   - level: lint
     status: passed
-    evidence: "https://github.com/z71701/new-api/actions/runs/37721680678 (go vet)"
+    evidence: "https://github.com/z71701/new-api/actions/runs/37767514653 (go vet on merged main)"
   - level: build
     status: passed
-    evidence: "https://github.com/z71701/new-api/actions/runs/37721680678 (root and independent relaykit builds)"
+    evidence: "https://github.com/z71701/new-api/actions/runs/37767514653 (root and independent relaykit builds on merged main)"
   - level: ci
     status: passed
-    evidence: "https://github.com/z71701/new-api/actions/runs/37721680678 (go test; MySQL 5.7/8.0; PostgreSQL 9.6/16; frontend typecheck/test)"
+    evidence: "https://github.com/z71701/new-api/actions/runs/37767514653 (go test; MySQL 5.7/8.0; PostgreSQL 9.6/16; frontend typecheck/test on merged main)"
 blockers:
   - "Roadmap PR-D (Manifest/Dashboard) not started"
   - "New image publication pending: https://github.com/z71701/new-api/actions/runs/37767539410"

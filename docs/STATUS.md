@@ -1,10 +1,10 @@
 # ALIAI — z71701/new-api 状态（本仓权威入口）
-<!-- status-sync: state=implemented source_commit=1b51fc3e9ac2acb8e6dbb943780ac451d2c81619 updated_at=2026-10-08T11:05:20Z -->
+<!-- status-sync: state=verified source_commit=1b51fc3e9ac2acb8e6dbb943780ac451d2c81619 updated_at=2026-10-08T11:13:56Z -->
 
 > 本文件是本仓库（backend）唯一现状入口，只记录本仓权威事实。其他仓库的状态以**固定 commit URL** 引用，不声明为动态事实。机器权威快照见 `docs/status.yml`（schema v1.1）。最后更新：2026-10-08。
 
 ## 当前阶段
-生命周期状态（`docs/status.yml`）：**implemented**（注册码功能上一状态 candidate，见原候选 handoff）。PR #12 已合并，当前快照开始跟踪注册码 API 的合并后交付；真实合并提交为 `1b51fc3e9ac2acb8e6dbb943780ac451d2c81619`。Tag `aliai/v1.0.0-rc.40.4` 已指向该提交，[GHCR 镜像构建](https://github.com/z71701/new-api/actions/runs/37767539410)尚未完成。
+生命周期状态（`docs/status.yml`）：**verified**（上一状态 implemented）。PR #12 已合并，合并后 CI 与 tag 源码测试通过；当前快照跟踪注册码 API 的合并后交付，真实合并提交为 `1b51fc3e9ac2acb8e6dbb943780ac451d2c81619`。Tag `aliai/v1.0.0-rc.40.4` 已指向该提交，[GHCR 镜像构建](https://github.com/z71701/new-api/actions/runs/37767539410)尚未完成。
 
 ## 本仓权威事实
 <!-- backend = API/OpenAPI/错误码/runtime switches/fixtures/后端状态 -->
@@ -20,10 +20,11 @@
 ## 版本与提交
 - 分支 / 合并提交：`main` @ `1b51fc3e9ac2acb8e6dbb943780ac451d2c81619`（`feat: add one-time registration codes (#12)`，squash 合并）。
 - 2026-10-08 修复：Redis 服务端绝对到期时间在失败恢复后保持不变；取消请求后的补偿使用独立 3 秒超时。专项测试先在旧实现复现失败，再在修复后通过；受影响包测试、go vet、专项 race 及真实 Redis 6.2.24 Lua 验证通过。
-- 生命周期：`implemented`（source_commit = 上列真实合并提交，handoff 的 `producer_commit` 与契约引用使用同一 SHA）。
+- 生命周期：`verified`（source_commit = 上列真实合并提交，handoff 的 `producer_commit` 与契约引用使用同一 SHA）。
 - 新版本 tag：`aliai/v1.0.0-rc.40.4`，annotated tag；远端解引用确认指向上列合并提交。
 - 上一已发布镜像基线：`aliai/v1.0.0-rc.40.3`，digest `sha256:ae5b2f699558611bea6ea50a5ac1865b79e133d1ebf7877f9e9a6cf869118593`；`backend.*` 暂保留该历史基线，新的镜像 digest 待构建证据产生后记录。
 - [合并前 CI](https://github.com/z71701/new-api/actions/runs/37721680678)与[治理校验](https://github.com/z71701/new-api/actions/runs/37721680656)通过，覆盖后端 vet/build/test、独立 relaykit 构建、前端 typecheck/test 以及 MySQL 5.7/8.0、PostgreSQL 9.6/16。
+- [合并后 CI](https://github.com/z71701/new-api/actions/runs/37767514653)全部通过；tag 工作流的 `Test source` 阶段通过。
 
 ## Runtime / 部署开关（仅本仓负责）
 | 开关 | 值 | 说明 |

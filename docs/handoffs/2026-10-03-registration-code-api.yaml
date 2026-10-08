@@ -14,6 +14,9 @@ contract_refs:
   - url: "https://github.com/z71701/new-api/blob/1b51fc3e9ac2acb8e6dbb943780ac451d2c81619/service/registration_code.go"
     kind: "service-contract"
 tests:
+  - name: "Merged-source CI and database compatibility matrix"
+    status: "passed"
+    evidence_url: "https://github.com/z71701/new-api/actions/runs/37767514653"
   - name: "PR #12 backend/frontend CI and database compatibility matrix"
     status: "passed"
     evidence_url: "https://github.com/z71701/new-api/actions/runs/37721680678"
@@ -47,5 +50,5 @@ downstream_actions:
     required: true
 blockers:
   - "Image publication pending: https://github.com/z71701/new-api/actions/runs/37767539410"
-lifecycle_state: "implemented"
-evidence_phase: "post_merge"
+lifecycle_state: "verified"
+evidence_phase: "post_build"
