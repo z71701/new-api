@@ -28,19 +28,40 @@ var (
 	ErrRegistrationCodeUnavailable = errors.New("registration code service is unavailable")
 	registrationCodePattern        = regexp.MustCompile(`^REG-[2-9A-HJ-NP-Z]{4}(?:-[2-9A-HJ-NP-Z]{4}){3}$`)
 	consumeRegistrationCodeScript  = redis.NewScript(`
+-- Required for TIME followed by writes on Redis versions before 7.0.
+if redis.replicate_commands then redis.replicate_commands() end
 local value = redis.call('GET', KEYS[1])
 if not value then
   return nil
 end
+local now = redis.call('TIME')
 local ttl = redis.call('PTTL', KEYS[1])
 redis.call('DEL', KEYS[1])
-return {value, ttl}
+if ttl <= 0 then
+  return nil
+end
+local expires_at = tonumber(now[1]) * 1000 + math.floor(tonumber(now[2]) / 1000) + ttl
+return {value, expires_at}
+`)
+	restoreRegistrationCodeScript = redis.NewScript(`
+if redis.replicate_commands then redis.replicate_commands() end
+local now = redis.call('TIME')
+local now_ms = tonumber(now[1]) * 1000 + math.floor(tonumber(now[2]) / 1000)
+if tonumber(ARGV[1]) <= now_ms then
+  return 0
+end
+if redis.call('SETNX', KEYS[1], '1') == 0 then
+  return 0
+end
+redis.call('PEXPIREAT', KEYS[1], ARGV[1])
+return 1
 `)
 )
 
 type ConsumedRegistrationCode struct {
-	Digest       string
-	RemainingTTL time.Duration
+	Digest string
+	// Absolute deadline measured by Redis, not the application host's clock.
+	ExpiresAtUnixMilli int64
 }
 
 func ValidateRegistrationCodeConfig() error {
@@ -136,21 +157,24 @@ func ConsumeRegistrationCodeDigest(ctx context.Context, digest string) (*Consume
 	if !ok || len(values) != 2 {
 		return nil, ErrRegistrationCodeUnavailable
 	}
-	ttlMillis, ok := values[1].(int64)
-	if !ok || ttlMillis <= 0 {
+	expiresAtUnixMilli, ok := values[1].(int64)
+	if !ok || expiresAtUnixMilli <= 0 {
 		return nil, ErrRegistrationCodeInvalid
 	}
 	return &ConsumedRegistrationCode{
-		Digest:       digest,
-		RemainingTTL: time.Duration(ttlMillis) * time.Millisecond,
+		Digest:             digest,
+		ExpiresAtUnixMilli: expiresAtUnixMilli,
 	}, nil
 }
 
 func RestoreRegistrationCode(ctx context.Context, consumed *ConsumedRegistrationCode) error {
-	if consumed == nil || consumed.RemainingTTL <= 0 || common.RDB == nil {
+	if consumed == nil || consumed.ExpiresAtUnixMilli <= 0 || common.RDB == nil {
 		return nil
 	}
-	_, err := common.RDB.SetNX(ctx, registrationCodePrefix+consumed.Digest, "1", consumed.RemainingTTL).Result()
+	// Evaluate expiry and restore atomically on Redis so DB/network delays cannot
+	// extend the original lifetime and an existing key is never overwritten.
+	_, err := restoreRegistrationCodeScript.Run(ctx, common.RDB,
+		[]string{registrationCodePrefix + consumed.Digest}, consumed.ExpiresAtUnixMilli).Result()
 	if err != nil {
 		return fmt.Errorf("restore registration code: %w", err)
 	}

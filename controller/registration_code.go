@@ -1,6 +1,7 @@
 package controller
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"time"
@@ -80,7 +81,14 @@ func consumeRegistrationCodeDigest(c *gin.Context, digest string) (*service.Cons
 }
 
 func restoreRegistrationCode(c *gin.Context, consumed *service.ConsumedRegistrationCode) {
-	if err := service.RestoreRegistrationCode(c.Request.Context(), consumed); err != nil {
+	if consumed == nil {
+		return
+	}
+	// Database work can outlive the request. Compensation must still run after
+	// cancellation, but must not block the handler indefinitely on Redis I/O.
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(c.Request.Context()), 3*time.Second)
+	defer cancel()
+	if err := service.RestoreRegistrationCode(ctx, consumed); err != nil {
 		common.SysError("failed to restore registration code: " + err.Error())
 	}
 }
