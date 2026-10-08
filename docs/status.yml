@@ -8,7 +8,7 @@ repo:
 lifecycle:
   current_state: released
   previous_state: verified
-  updated_at: "2026-10-03T12:44:52Z"
+  updated_at: "2026-10-08T02:58:32Z"
   source_commit: "598e708adeb15c6f5ad8dda24f448ae0a024238a"
   evidence: "Existing backend release baseline remains authoritative; registration-code-api is tracked separately as a feature candidate handoff"
 artifact:
@@ -26,7 +26,7 @@ tests:
     evidence: "GitHub Actions CI (go test; MySQL 5.7/8.0; PostgreSQL 9.6/16)"
 blockers:
   - "Roadmap PR-D (Manifest/Dashboard) not started"
-  - "Registration code feature candidate pending PR review and merge"
+  - "Registration code PR #12: expiry/cancellation compensation fixes locally verified; pending review and merge"
 backend:
   image_tag: "aliai/v1.0.0-rc.40.3"
   image_digest: "sha256:ae5b2f699558611bea6ea50a5ac1865b79e133d1ebf7877f9e9a6cf869118593"
