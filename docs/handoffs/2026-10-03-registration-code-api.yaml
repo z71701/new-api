@@ -1,48 +1,59 @@
 schema_version: "1.1"
 producer_repo: "z71701/new-api"
-producer_commit: "1aea8b3b34781d635f0ef34a807f5ed350c9bda9"
-artifact: "registration-code-api"
+producer_commit: "b0085de10d41cef20b197ad60f0808348e9316bb"
+artifact: "registration-code-admin"
 version: "candidate"
 change_type: "contract_change"
 compatibility: "conditional"
-summary: "Adds optional Redis-backed one-time registration codes across public account creation paths; failure compensation preserves the Redis absolute expiry and uses an independent 3-second context."
+summary: "Adds administrator registration-code history/generation without repeated password entry, plus a root-only persistent basic-auth switch; Redis single-use/expiry and existing public/external generation contracts are retained."
 created_at: "2026-10-03"
-updated_at: "2026-10-08"
+updated_at: "2026-10-09"
 contract_refs:
-  - url: "https://github.com/z71701/new-api/blob/1aea8b3b34781d635f0ef34a807f5ed350c9bda9/router/api-router.go"
+  - url: "https://github.com/z71701/new-api/blob/b0085de10d41cef20b197ad60f0808348e9316bb/router/api-router.go"
     kind: "api-route"
-  - url: "https://github.com/z71701/new-api/blob/1aea8b3b34781d635f0ef34a807f5ed350c9bda9/service/registration_code.go"
+  - url: "https://github.com/z71701/new-api/blob/b0085de10d41cef20b197ad60f0808348e9316bb/controller/registration_code.go"
+    kind: "api-contract"
+  - url: "https://github.com/z71701/new-api/blob/b0085de10d41cef20b197ad60f0808348e9316bb/service/registration_code.go"
     kind: "service-contract"
+  - url: "https://github.com/z71701/new-api/blob/b0085de10d41cef20b197ad60f0808348e9316bb/model/registration_code.go"
+    kind: "migration-contract"
 tests:
-  - name: "Affected Go package tests"
+  - name: "Affected backend packages and vet"
     status: "passed"
     evidence_url: ""
-  - name: "Registration code expiry/cancellation regressions and targeted race tests"
+    command: "go test ./controller ./service ./middleware ./model -count=1; go vet ./controller ./service ./middleware ./model ./router"
+  - name: "Registration code security, expiry, compensation, ciphertext tampering and key rotation"
     status: "passed"
     evidence_url: ""
-    command: "go test -race ./service ./controller -run '^TestRegistrationCode' -count=1"
-  - name: "Affected package static checks"
+    command: "go test -race ./controller ./service -run '^TestRegistrationCode' -count=1"
+  - name: "Real SQLite 3.50.4, MySQL 8.0.40 and PostgreSQL 16.15 administration/migration checks"
     status: "passed"
     evidence_url: ""
-    command: "go vet ./service ./controller ./middleware ./router"
-  - name: "Real Redis 6.2.24 Lua integration: original expiry, no overwrite, no expired restore"
+    command: "TEST_SECURITY_DIALECT=<dialect> go test ./controller -run 'RegistrationCode(Admin|Management|Ledger)' -v -count=1; fresh startup and released commit 1b51fc3e9ac2acb8e6dbb943780ac451d2c81619 upgrade each started twice, preserving users/options and uniqueness"
+  - name: "52 affected frontend tests, changed-file lint/format and production build/typecheck"
     status: "passed"
     evidence_url: ""
-  - name: "Frontend auth tests and typecheck (original feature validation; no frontend changes in this fix)"
+    command: "bun run test src/features/registration-codes/__tests__/management.test.tsx src/features/system-settings/auth/__tests__/registration-code-switch.test.tsx src/hooks/__tests__/sidebar-config.test.tsx src/features/auth/secure-verification/__tests__; bun run build:check"
+  - name: "Local browser role and administration acceptance"
     status: "passed"
-    evidence_url: ""
+    evidence_url: "https://github.com/z71701/new-api/blob/b0085de10d41cef20b197ad60f0808348e9316bb/.github/screenshots/registration-code-management.png"
 runtime_switches:
-  registration_code_enabled: false
-  registration_code_ttl_seconds: 1800
+  registration_code_enabled_default: false
+  registration_code_enabled_source: "Persisted RegistrationCodeEnabled option, with REGISTRATION_CODE_ENABLED environment fallback"
+  registration_code_ttl_seconds_default: 1800
+  registration_code_max_count: 100
+  registration_code_max_ttl_seconds: 86400
   registration_code_api_key_required_when_enabled: true
+  history_encryption_key_source: "Domain-separated key derived from the independent REGISTRATION_CODE_API_KEY; preserve this secret to keep existing history readable"
 downstream_actions:
   - repo: "Yohalloo/aliai-desktop"
-    action: "If desktop registration is exposed, add registration_code input and consume the pinned backend contract."
+    action: "Public registration input/status contracts are unchanged; consume the pinned registration_code_enabled value when deciding whether to ask for a registration code."
     required: false
   - repo: "z71701/aliai-deploy"
-    action: "When enabling registration codes, configure shared Redis and a secret REGISTRATION_CODE_API_KEY."
+    action: "After approved merge/build, pin the produced image digest; back up the database and existing independent secret before the additive ledger migration, retain shared Redis, and verify the actual runtime gate. For rollback to rc.40.4, reconcile REGISTRATION_CODE_ENABLED with the persisted option because that binary is environment-only. Do not deploy this candidate handoff."
     required: true
 blockers:
-  - "Pending PR review and merge"
+  - "Pending review/merge and final post-merge handoff"
+  - "Tag and production deployment require explicit human authorization"
 lifecycle_state: "candidate"
 evidence_phase: "pre_merge"
