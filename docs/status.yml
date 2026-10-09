@@ -3,13 +3,12 @@ repo:
   name: z71701/new-api
   role: backend
 lifecycle:
-  current_state: implemented
-  previous_state: candidate
-  updated_at: '2026-10-09T12:17:27Z'
+  current_state: verified
+  previous_state: implemented
+  updated_at: '2026-10-09T12:26:08Z'
   source_commit: 66bb4f12b5517896d53304ce7bb8e784ddad5092
-  evidence: 'PR #14 merged with explicit user authorization; all seven PR checks passed. Immutable code source and
-    post-merge registration-code handoff are pinned to the actual squash merge commit. Tag aliai/v1.0.0-rc.40.5
-    pushed; image build is pending.'
+  evidence: 'PR #14 implementation and independent post-merge PR #15 both passed all CI checks and merged. Tag source
+    validation passed; immutable image publication remains pending.'
 artifact:
   name: registration-code-admin
   version: aliai/v1.0.0-rc.40.5

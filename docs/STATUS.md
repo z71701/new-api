@@ -1,10 +1,10 @@
 # ALIAI — z71701/new-api 状态（本仓权威入口）
-<!-- status-sync: state=implemented source_commit=66bb4f12b5517896d53304ce7bb8e784ddad5092 updated_at=2026-10-09T12:17:27Z -->
+<!-- status-sync: state=verified source_commit=66bb4f12b5517896d53304ce7bb8e784ddad5092 updated_at=2026-10-09T12:26:08Z -->
 
 > 本文件是本仓库（backend）唯一现状入口，只记录本仓权威事实。其他仓库的状态以**固定 commit URL** 引用，不声明为动态事实。机器权威快照见 `docs/status.yml`（schema v1.1）。最后更新：2026-10-09。
 
 ## 当前阶段
-`registration-code-admin` 已通过 PR #14 合入，生命周期 **candidate → implemented**。用户已明确授权合并、Tag 和部署；`aliai/v1.0.0-rc.40.5` 已推送到真实合并提交，正在构建不可变镜像。该状态记录是合并后的独立交接，不提前声明镜像发布完成。
+`registration-code-admin` 已通过 PR #14 合入，生命周期 **implemented → verified**。用户已明确授权合并、Tag 和部署；`aliai/v1.0.0-rc.40.5` 已推送到真实合并提交，正在构建不可变镜像。独立 post-merge PR #15 已合入；全部 PR CI 和 Tag 源码验证通过，镜像发布仍待实际 digest。
 
 ## 本仓权威事实
 <!-- backend = API/OpenAPI/错误码/runtime switches/fixtures/后端状态 -->

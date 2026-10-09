@@ -68,5 +68,5 @@ downstream_actions:
   required: true
 blockers:
 - Pending immutable image digest and post-build evidence.
-lifecycle_state: implemented
-evidence_phase: post_merge
+lifecycle_state: verified
+evidence_phase: post_build
