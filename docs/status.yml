@@ -3,12 +3,13 @@ repo:
   name: z71701/new-api
   role: backend
 lifecycle:
-  current_state: verified
-  previous_state: implemented
-  updated_at: '2026-10-09T12:26:08Z'
+  current_state: released
+  previous_state: verified
+  updated_at: '2026-10-09T12:28:31Z'
   source_commit: 66bb4f12b5517896d53304ce7bb8e784ddad5092
-  evidence: 'PR #14 implementation and independent post-merge PR #15 both passed all CI checks and merged. Tag source
-    validation passed; immutable image publication remains pending.'
+  evidence: 'PR #14 merge 66bb4f12b5517896d53304ce7bb8e784ddad5092 tagged as aliai/v1.0.0-rc.40.5; source validation
+    and linux/amd64 image publication passed. Image-reference artifact and GHCR manifest independently match sha256:652e2bfea7ba6c34d5c534282bb38e7ce921c7e5cef9bedda2e52d7159965cb8.
+    https://github.com/z71701/new-api/actions/runs/37928869622'
 artifact:
   name: registration-code-admin
   version: aliai/v1.0.0-rc.40.5
@@ -36,5 +37,9 @@ tests:
 - level: ci
   status: passed
   evidence: 'PR #14: seven checks passed; MySQL 5.7/8.0, PostgreSQL 9.6/16, frontend, backend and governance. https://github.com/z71701/new-api/actions/runs/37917007509'
-blockers:
-- Pending image build and immutable digest evidence; deployment consumes the final fixed-commit handoff.
+blockers: []
+backend:
+  image_tag: aliai/v1.0.0-rc.40.5
+  image_digest: sha256:652e2bfea7ba6c34d5c534282bb38e7ce921c7e5cef9bedda2e52d7159965cb8
+  image_ref: ghcr.io/z71701/new-api@sha256:652e2bfea7ba6c34d5c534282bb38e7ce921c7e5cef9bedda2e52d7159965cb8
+  image_evidence: https://github.com/z71701/new-api/actions/runs/37928869622

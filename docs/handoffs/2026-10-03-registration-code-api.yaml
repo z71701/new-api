@@ -45,6 +45,9 @@ tests:
 - name: 'PR #14 CI: backend/frontend/governance and minimum/current database matrix'
   status: passed
   evidence_url: https://github.com/z71701/new-api/actions/runs/37917007509
+- name: Tag source tests and immutable linux/amd64 image publication
+  status: passed
+  evidence_url: https://github.com/z71701/new-api/actions/runs/37928869622
 runtime_switches:
   registration_code_enabled_default: false
   registration_code_enabled_source: Persisted RegistrationCodeEnabled option, with REGISTRATION_CODE_ENABLED environment
@@ -66,7 +69,11 @@ downstream_actions:
     to rc.40.4, reconcile REGISTRATION_CODE_ENABLED with the persisted option because that binary is environment-only.
     Do not deploy this candidate handoff.
   required: true
-blockers:
-- Pending immutable image digest and post-build evidence.
-lifecycle_state: verified
+blockers: []
+lifecycle_state: released
 evidence_phase: post_build
+image:
+  tag: aliai/v1.0.0-rc.40.5
+  reference: ghcr.io/z71701/new-api@sha256:652e2bfea7ba6c34d5c534282bb38e7ce921c7e5cef9bedda2e52d7159965cb8
+  digest: sha256:652e2bfea7ba6c34d5c534282bb38e7ce921c7e5cef9bedda2e52d7159965cb8
+  evidence_url: https://github.com/z71701/new-api/actions/runs/37928869622
