@@ -1,10 +1,10 @@
 # ALIAI — z71701/new-api 状态（本仓权威入口）
-<!-- status-sync: state=candidate source_commit=b0085de10d41cef20b197ad60f0808348e9316bb updated_at=2026-10-09T10:12:10Z -->
+<!-- status-sync: state=implemented source_commit=66bb4f12b5517896d53304ce7bb8e784ddad5092 updated_at=2026-10-09T12:17:27Z -->
 
 > 本文件是本仓库（backend）唯一现状入口，只记录本仓权威事实。其他仓库的状态以**固定 commit URL** 引用，不声明为动态事实。机器权威快照见 `docs/status.yml`（schema v1.1）。最后更新：2026-10-09。
 
 ## 当前阶段
-本次跟踪新的 `registration-code-admin` 交付物，生命周期 **planned → candidate**。后台管理页面与接口已完成本地验证，等待 PR 评审与合入；尚未为本候选打 Tag、发布镜像或部署。原注册码基础功能已在 PR #12 合入，基线为 `1b51fc3e9ac2acb8e6dbb943780ac451d2c81619`（rc.40.4）。历史发布事实不由本候选替代。
+`registration-code-admin` 已通过 PR #14 合入，生命周期 **candidate → implemented**。用户已明确授权合并、Tag 和部署；`aliai/v1.0.0-rc.40.5` 已推送到真实合并提交，正在构建不可变镜像。该状态记录是合并后的独立交接，不提前声明镜像发布完成。
 
 ## 本仓权威事实
 <!-- backend = API/OpenAPI/错误码/runtime switches/fixtures/后端状态 -->
@@ -19,9 +19,9 @@
 
 ## 版本与提交
 - 功能分支：`codex/registration-code-admin`。
-- 已验证实现：[固定功能提交](https://github.com/z71701/new-api/commit/b0085de10d41cef20b197ad60f0808348e9316bb)；机器状态 source_commit 保留该实现 SHA，不预填合并 SHA。
+- 实际合并提交：[PR #14 固定提交](https://github.com/z71701/new-api/commit/66bb4f12b5517896d53304ce7bb8e784ddad5092)；Tag `aliai/v1.0.0-rc.40.5` 指向同一提交。
 - 基础功能：[PR #12 合并提交](https://github.com/z71701/new-api/commit/1b51fc3e9ac2acb8e6dbb943780ac451d2c81619)。
-- 本候选交接见 `docs/handoffs/2026-10-03-registration-code-api.yaml`，状态 `candidate / pre_merge`；不声明新镜像 digest。
+- 最终 API 交接见 `docs/handoffs/2026-10-03-registration-code-api.yaml`，状态 `implemented / post_merge`，producer_commit 为真实合并 SHA；镜像 digest 待构建证据。
 - 验证：受影响 Go 包测试与 vet、注册码专项 race、52 项前端回归、变更文件 lint/格式检查、类型检查与生产构建通过。实际数据库为 SQLite **3.50.4**、MySQL **8.0.40**、PostgreSQL **16.15**；每种均运行新安装及 rc.40.4 数据库升级，完整启动/迁移两次，保留用户/配置及摘要唯一约束。MySQL/PostgreSQL 另含独立日志数据库启动；SQLite 日志路径使用本库。
 - 页面实测：管理员无需再次输入密码即可生成；刷新保留列表；普通用户不显示入口，直接访问 `/registration-codes` 返回 403。截图位于 `.github/screenshots/`。
 
@@ -44,8 +44,8 @@
 | #8 | desktop E2E acceptance contract | `c1876ec91a814673ec30316da741fb6efa428ebe` |
 
 ## 开放项 / Blockers
-- 等待本次管理功能 PR 评审与合入；合并、Tag 和生产部署需本次明确授权。
-- 合并后由 merge agent 生成独立 post-merge 状态更新及最终 handoff，使用真实 merge SHA；部署仓固定实际镜像 digest 并记录发布/回滚证据。
+- PR #14 七项 CI 全部通过，用户已明确授权本次合并、Tag 与部署。
+- 本独立 post-merge 更新已固定实际合并 SHA；待镜像构建完成，由发布更新记录 digest，部署仓消费固定 URL 并记录其发布/回滚证据。
 - 发版时备份数据库及现有独立密钥，保留共享 Redis。回滚到 rc.40.4 时须核对环境开关，因为该版本尚不消费数据库 `RegistrationCodeEnabled` option。
 - Roadmap **PR-D**（发布与统计 Manifest / Dashboard）与已合并 PR #8 的 E2E 契约不同；本任务不推进该 Roadmap。
 
