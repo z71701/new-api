@@ -39,10 +39,12 @@ func TestRegistrationCodeCompensationAfterRequestEnds(t *testing.T) {
 		t.Run(reason, func(t *testing.T) {
 			server := miniredis.RunT(t)
 			client := redis.NewClient(&redis.Options{Addr: server.Addr()})
-			previousClient, previousEnabled := common.RDB, common.RegistrationCodeEnabled
-			common.RDB, common.RegistrationCodeEnabled = client, true
+			previousClient, previousEnabled := common.RDB, common.RegistrationCodeEnabled.Load()
+			common.RDB = client
+			common.RegistrationCodeEnabled.Store(true)
 			t.Cleanup(func() {
-				common.RDB, common.RegistrationCodeEnabled = previousClient, previousEnabled
+				common.RDB = previousClient
+				common.RegistrationCodeEnabled.Store(previousEnabled)
 				require.NoError(t, client.Close())
 			})
 			codes, err := service.GenerateRegistrationCodes(context.Background(), 1, time.Minute)
@@ -745,7 +747,7 @@ func setupAuthFlowControllerTest(t *testing.T) *authFlowTestOAuthProvider {
 	previousType := common.MainDatabaseType()
 	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
 	require.NoError(t, err)
-	require.NoError(t, db.AutoMigrate(&model.AuthFlow{}, &model.User{}, &model.UserSession{}, &model.AuditLog{}))
+	require.NoError(t, db.AutoMigrate(&model.AuthFlow{}, &model.User{}, &model.UserSession{}, &model.AuditLog{}, &model.RegistrationCodeRecord{}))
 	model.DB, model.LOG_DB = db, db
 	common.SetMainDatabaseType(common.DatabaseTypeSQLite)
 	provider := &authFlowTestOAuthProvider{}

@@ -1,32 +1,36 @@
 # ALIAI repository lifecycle status — machine authority.
-# Consumed by scripts/aliai_validate.py. Schema version "1.1".
-# Human view: docs/STATUS.md (must carry a matching status-sync marker).
 schema_version: "1.1"
 repo:
   name: "z71701/new-api"
   role: backend
 lifecycle:
-  current_state: released
-  previous_state: verified
-  updated_at: "2026-10-08T02:58:32Z"
-  source_commit: "598e708adeb15c6f5ad8dda24f448ae0a024238a"
-  evidence: "Existing backend release baseline remains authoritative; registration-code-api is tracked separately as a feature candidate handoff"
+  current_state: candidate
+  previous_state: planned
+  updated_at: "2026-10-09T10:12:10Z"
+  source_commit: "b0085de10d41cef20b197ad60f0808348e9316bb"
+  evidence: "New registration-code-admin artifact: local administration UI/API, security regressions and SQLite/MySQL/PostgreSQL migration checks passed; pending PR review and merge."
 artifact:
-  name: "desktop-auth-api"
-  version: "1.0"
+  name: "registration-code-admin"
+  version: "candidate"
 tests:
+  - level: mock_unit
+    status: passed
+    evidence: "go test ./controller ./service ./middleware ./model -count=1; go test -race ./controller ./service -run '^TestRegistrationCode' -count=1; 52 affected frontend tests passed"
+  - level: typecheck
+    status: passed
+    evidence: "bun run build:check (tsgo -b)"
   - level: lint
     status: passed
-    evidence: "GitHub Actions CI (go vet)"
+    evidence: "go vet ./controller ./service ./middleware ./model ./router; Oxlint 1.72.0 on changed TS/TSX files, including project/intl-locale; protected-header formatting check passed"
   - level: build
     status: passed
-    evidence: "GitHub Actions CI (go build)"
-  - level: ci
+    evidence: "go build; bun run build:check; real SQLite 3.50.4, MySQL 8.0.40 and PostgreSQL 16.15 tests; fresh startup and rc.40.4 upgrade each migrated twice, preserving users/options and digest uniqueness"
+  - level: real_e2e
     status: passed
-    evidence: "GitHub Actions CI (go test; MySQL 5.7/8.0; PostgreSQL 9.6/16)"
+    evidence: "Local browser with actual API, SQLite and Redis: root generated two codes without password; refresh retained records; ordinary user had no sidebar entry and direct access redirected to 403; basic-auth switch location verified"
+  - level: ci
+    status: not_run
+    evidence: "PR CI will run backend/frontend checks and MySQL 5.7/8.0, PostgreSQL 9.6/16 registration-code administration regressions"
 blockers:
-  - "Roadmap PR-D (Manifest/Dashboard) not started"
-  - "Registration code PR #12: expiry/cancellation compensation fixes locally verified; pending review and merge"
-backend:
-  image_tag: "aliai/v1.0.0-rc.40.3"
-  image_digest: "sha256:ae5b2f699558611bea6ea50a5ac1865b79e133d1ebf7877f9e9a6cf869118593"
+  - "Pending PR review, merge authorization and post-merge handoff/image evidence"
+  - "Tag and production deployment require explicit human authorization"

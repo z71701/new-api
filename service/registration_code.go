@@ -2,8 +2,11 @@ package service
 
 import (
 	"context"
+	"crypto/aes"
+	"crypto/cipher"
 	"crypto/rand"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -12,6 +15,7 @@ import (
 	"time"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/model"
 	"github.com/go-redis/redis/v8"
 )
 
@@ -60,21 +64,26 @@ return 1
 
 type ConsumedRegistrationCode struct {
 	Digest string
+	UseRef string
 	// Absolute deadline measured by Redis, not the application host's clock.
 	ExpiresAtUnixMilli int64
 }
 
 func ValidateRegistrationCodeConfig() error {
-	if !common.RegistrationCodeEnabled {
+	if !common.RegistrationCodeEnabled.Load() {
 		return nil
 	}
+	return ValidateRegistrationCodeDependencies()
+}
+
+func ValidateRegistrationCodeDependencies() error {
 	if !common.RedisEnabled || common.RDB == nil {
 		return errors.New("REGISTRATION_CODE_ENABLED requires REDIS_CONN_STRING")
 	}
 	if len(common.RegistrationCodeAPIKey) < 32 {
 		return errors.New("REGISTRATION_CODE_API_KEY must contain at least 32 characters")
 	}
-	if common.RegistrationCodeTTLSeconds <= 0 || time.Duration(common.RegistrationCodeTTLSeconds)*time.Second > maxRegistrationCodeTTL {
+	if common.RegistrationCodeTTLSeconds <= 0 || common.RegistrationCodeTTLSeconds > int(maxRegistrationCodeTTL/time.Second) {
 		return fmt.Errorf("REGISTRATION_CODE_TTL_SECONDS must be between 1 and %d", int(maxRegistrationCodeTTL/time.Second))
 	}
 	return nil
@@ -93,8 +102,49 @@ func RegistrationCodeDigest(code string) (string, error) {
 	return hex.EncodeToString(digest[:]), nil
 }
 
+// Registration code history can be copied by administrators; store ciphertext
+// instead of plaintext. Rotating the independent code API key also rotates
+// this encryption key. Redis validity is unaffected by history decryption.
+func EncryptRegistrationCode(code string) (string, error) {
+	key := sha256.Sum256([]byte("registration-code-history:v1:" + common.RegistrationCodeAPIKey))
+	block, err := aes.NewCipher(key[:])
+	if err != nil {
+		return "", err
+	}
+	gcm, err := cipher.NewGCM(block)
+	if err != nil {
+		return "", err
+	}
+	nonce := make([]byte, gcm.NonceSize())
+	if _, err := rand.Read(nonce); err != nil {
+		return "", err
+	}
+	return base64.RawStdEncoding.EncodeToString(gcm.Seal(nonce, nonce, []byte(code), []byte("registration-code:v1"))), nil
+}
+
+func DecryptRegistrationCode(encrypted string) (string, error) {
+	key := sha256.Sum256([]byte("registration-code-history:v1:" + common.RegistrationCodeAPIKey))
+	block, err := aes.NewCipher(key[:])
+	if err != nil {
+		return "", err
+	}
+	gcm, err := cipher.NewGCM(block)
+	if err != nil {
+		return "", err
+	}
+	data, err := base64.RawStdEncoding.DecodeString(encrypted)
+	if err != nil || len(data) < gcm.NonceSize() {
+		return "", ErrRegistrationCodeUnavailable
+	}
+	plain, err := gcm.Open(nil, data[:gcm.NonceSize()], data[gcm.NonceSize():], []byte("registration-code:v1"))
+	if err != nil {
+		return "", ErrRegistrationCodeUnavailable
+	}
+	return string(plain), nil
+}
+
 func GenerateRegistrationCodes(ctx context.Context, count int, ttl time.Duration) ([]string, error) {
-	if !common.RegistrationCodeEnabled || common.RDB == nil {
+	if !common.RegistrationCodeEnabled.Load() || common.RDB == nil {
 		return nil, ErrRegistrationCodeUnavailable
 	}
 	if count < 1 || count > maxRegistrationCodeCount || ttl <= 0 || ttl > maxRegistrationCodeTTL {
@@ -129,6 +179,21 @@ func GenerateRegistrationCodes(ctx context.Context, count int, ttl time.Duration
 	return codes, nil
 }
 
+func DiscardRegistrationCodes(ctx context.Context, codes []string) error {
+	keys := make([]string, 0, len(codes))
+	for _, code := range codes {
+		digest, err := RegistrationCodeDigest(code)
+		if err != nil {
+			return err
+		}
+		keys = append(keys, registrationCodePrefix+digest)
+	}
+	if len(keys) == 0 {
+		return nil
+	}
+	return common.RDB.Del(ctx, keys...).Err()
+}
+
 func ConsumeRegistrationCode(ctx context.Context, code string) (*ConsumedRegistrationCode, error) {
 	digest, err := RegistrationCodeDigest(code)
 	if err != nil {
@@ -138,7 +203,7 @@ func ConsumeRegistrationCode(ctx context.Context, code string) (*ConsumedRegistr
 }
 
 func ConsumeRegistrationCodeDigest(ctx context.Context, digest string) (*ConsumedRegistrationCode, error) {
-	if !common.RegistrationCodeEnabled || common.RDB == nil {
+	if !common.RegistrationCodeEnabled.Load() || common.RDB == nil {
 		return nil, ErrRegistrationCodeUnavailable
 	}
 	decoded, err := hex.DecodeString(digest)
@@ -161,10 +226,21 @@ func ConsumeRegistrationCodeDigest(ctx context.Context, digest string) (*Consume
 	if !ok || expiresAtUnixMilli <= 0 {
 		return nil, ErrRegistrationCodeInvalid
 	}
-	return &ConsumedRegistrationCode{
+	consumed := &ConsumedRegistrationCode{
 		Digest:             digest,
+		UseRef:             common.GetUUID(),
 		ExpiresAtUnixMilli: expiresAtUnixMilli,
-	}, nil
+	}
+	if err := model.RecordRegistrationCodeConsumption(digest, time.Now().Unix(), consumed.UseRef); err != nil {
+		// Do not burn a valid code when its administration ledger cannot be saved.
+		compensation, cancel := context.WithTimeout(context.WithoutCancel(ctx), 3*time.Second)
+		defer cancel()
+		if restoreErr := RestoreRegistrationCode(compensation, consumed); restoreErr != nil {
+			common.SysError("registration code ledger compensation failed")
+		}
+		return nil, ErrRegistrationCodeUnavailable
+	}
+	return consumed, nil
 }
 
 func RestoreRegistrationCode(ctx context.Context, consumed *ConsumedRegistrationCode) error {
@@ -173,10 +249,15 @@ func RestoreRegistrationCode(ctx context.Context, consumed *ConsumedRegistration
 	}
 	// Evaluate expiry and restore atomically on Redis so DB/network delays cannot
 	// extend the original lifetime and an existing key is never overwritten.
-	_, err := restoreRegistrationCodeScript.Run(ctx, common.RDB,
+	restored, err := restoreRegistrationCodeScript.Run(ctx, common.RDB,
 		[]string{registrationCodePrefix + consumed.Digest}, consumed.ExpiresAtUnixMilli).Result()
 	if err != nil {
 		return fmt.Errorf("restore registration code: %w", err)
+	}
+	if restored == int64(1) {
+		if err := model.ResetRegistrationCodeConsumption(consumed.Digest, consumed.UseRef); err != nil {
+			return err
+		}
 	}
 	return nil
 }

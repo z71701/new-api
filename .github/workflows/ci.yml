@@ -119,6 +119,9 @@ jobs:
       - name: Run MySQL cross-process idempotency test
         run: go test ./model/ -run "TestCreateTokenIdempotentCrossProcessRace/mysql" -v -count=1
 
+      - name: Run registration code administration and migration tests
+        run: go test ./controller/ -run "RegistrationCode(Admin|Management|Ledger)" -v -count=1
+
       - name: Run desktop auth acceptance tests on MySQL
         run: go test ./controller/ -run "TestDesktopAcceptance" -v -count=1
 
@@ -177,6 +180,9 @@ jobs:
 
       - name: Run PostgreSQL cross-process idempotency test
         run: go test ./model/ -run "TestCreateTokenIdempotentCrossProcessRace/postgres" -v -count=1
+
+      - name: Run registration code administration and migration tests
+        run: go test ./controller/ -run "RegistrationCode(Admin|Management|Ledger)" -v -count=1
 
       - name: Run desktop auth acceptance tests on PostgreSQL
         run: go test ./controller/ -run "TestDesktopAcceptance" -v -count=1

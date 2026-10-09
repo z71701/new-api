@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/model"
 	"github.com/alicebob/miniredis/v2"
 	"github.com/go-redis/redis/v8"
 	"github.com/stretchr/testify/assert"
@@ -19,17 +20,20 @@ func setupRegistrationCodeTest(t *testing.T) *miniredis.Miniredis {
 	t.Helper()
 	server := miniredis.RunT(t)
 	client := redis.NewClient(&redis.Options{Addr: server.Addr()})
+	previousDB := model.DB
+	model.DB = nil // These Redis lifecycle tests isolate validity from the separately tested admin ledger.
 	previousClient := common.RDB
 	previousRedisEnabled := common.RedisEnabled
-	previousRegistrationEnabled := common.RegistrationCodeEnabled
+	previousRegistrationEnabled := common.RegistrationCodeEnabled.Load()
 	common.RDB = client
 	common.RedisEnabled = true
-	common.RegistrationCodeEnabled = true
+	common.RegistrationCodeEnabled.Store(true)
 	t.Cleanup(func() {
+		model.DB = previousDB
 		require.NoError(t, client.Close())
 		common.RDB = previousClient
 		common.RedisEnabled = previousRedisEnabled
-		common.RegistrationCodeEnabled = previousRegistrationEnabled
+		common.RegistrationCodeEnabled.Store(previousRegistrationEnabled)
 	})
 	return server
 }

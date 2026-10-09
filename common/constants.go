@@ -5,6 +5,7 @@ import (
 	//"os"
 	//"strconv"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
@@ -69,7 +70,7 @@ var WeChatAuthEnabled = false
 var TelegramOAuthEnabled = false
 var TurnstileCheckEnabled = false
 var RegisterEnabled = true
-var RegistrationCodeEnabled = false
+var RegistrationCodeEnabled atomic.Bool
 var RegistrationCodeAPIKey = ""
 var RegistrationCodeTTLSeconds = 1800
 

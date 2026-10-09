@@ -211,9 +211,17 @@ func SetApiRouter(router *gin.Engine) {
 		apiRouter.GET("/subscription/epay/return", controller.SubscriptionEpayReturn)
 		apiRouter.POST("/subscription/epay/return", anonymousRequestBodyLimit, controller.SubscriptionEpayReturn)
 		optionRoute := apiRouter.Group("/option")
+		registrationCodeRoute := apiRouter.Group("/registration-codes", middleware.AdminAuth(), middleware.DisableCache())
+		{
+			registrationCodeRoute.GET("/", controller.ListRegistrationCodes)
+			registrationCodeRoute.GET("/settings", controller.GetRegistrationCodeSettings)
+			registrationCodeRoute.POST("/", middleware.CriticalRateLimit(), anonymousRequestBodyLimit, controller.GenerateRegistrationCodesForDashboard)
+		}
 		optionRoute.Use(middleware.RootAuth())
 		{
 			optionRoute.GET("/", controller.GetOptions)
+			optionRoute.GET("/registration-codes", middleware.DisableCache(), controller.GetRegistrationCodeSettings)
+			optionRoute.PUT("/registration-codes", middleware.CriticalRateLimit(), anonymousRequestBodyLimit, middleware.DisableCache(), controller.UpdateRegistrationCodeSettings)
 			optionRoute.GET("/request_policy", controller.GetRequestPolicy)
 			optionRoute.PATCH("/request_policy", controller.UpdateRequestPolicy)
 			optionRoute.PUT("/", controller.UpdateOption)

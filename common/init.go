@@ -88,7 +88,7 @@ func InitEnv() {
 	MemoryCacheEnabled = os.Getenv("MEMORY_CACHE_ENABLED") == "true"
 	IsMasterNode = os.Getenv("NODE_TYPE") != "slave"
 	PasswordLoginEncryptionEnabled = GetEnvOrDefaultBool("PASSWORD_LOGIN_ENCRYPTION_ENABLED", false)
-	RegistrationCodeEnabled = GetEnvOrDefaultBool("REGISTRATION_CODE_ENABLED", false)
+	RegistrationCodeEnabled.Store(GetEnvOrDefaultBool("REGISTRATION_CODE_ENABLED", false))
 	RegistrationCodeAPIKey = strings.TrimSpace(os.Getenv("REGISTRATION_CODE_API_KEY"))
 	RegistrationCodeTTLSeconds = GetEnvOrDefault("REGISTRATION_CODE_TTL_SECONDS", 1800)
 	initNodeNameIdentity()
