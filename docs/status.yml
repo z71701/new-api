@@ -1,36 +1,41 @@
-# ALIAI repository lifecycle status — machine authority.
-schema_version: "1.1"
+schema_version: '1.1'
 repo:
-  name: "z71701/new-api"
+  name: z71701/new-api
   role: backend
 lifecycle:
-  current_state: candidate
-  previous_state: planned
-  updated_at: "2026-10-09T10:12:10Z"
-  source_commit: "b0085de10d41cef20b197ad60f0808348e9316bb"
-  evidence: "New registration-code-admin artifact: local administration UI/API, security regressions and SQLite/MySQL/PostgreSQL migration checks passed; pending PR review and merge."
+  current_state: implemented
+  previous_state: candidate
+  updated_at: '2026-10-09T12:17:27Z'
+  source_commit: 66bb4f12b5517896d53304ce7bb8e784ddad5092
+  evidence: 'PR #14 merged with explicit user authorization; all seven PR checks passed. Immutable code source and
+    post-merge registration-code handoff are pinned to the actual squash merge commit. Tag aliai/v1.0.0-rc.40.5
+    pushed; image build is pending.'
 artifact:
-  name: "registration-code-admin"
-  version: "candidate"
+  name: registration-code-admin
+  version: aliai/v1.0.0-rc.40.5
 tests:
-  - level: mock_unit
-    status: passed
-    evidence: "go test ./controller ./service ./middleware ./model -count=1; go test -race ./controller ./service -run '^TestRegistrationCode' -count=1; 52 affected frontend tests passed"
-  - level: typecheck
-    status: passed
-    evidence: "bun run build:check (tsgo -b)"
-  - level: lint
-    status: passed
-    evidence: "go vet ./controller ./service ./middleware ./model ./router; Oxlint 1.72.0 on changed TS/TSX files, including project/intl-locale; protected-header formatting check passed"
-  - level: build
-    status: passed
-    evidence: "go build; bun run build:check; real SQLite 3.50.4, MySQL 8.0.40 and PostgreSQL 16.15 tests; fresh startup and rc.40.4 upgrade each migrated twice, preserving users/options and digest uniqueness"
-  - level: real_e2e
-    status: passed
-    evidence: "Local browser with actual API, SQLite and Redis: root generated two codes without password; refresh retained records; ordinary user had no sidebar entry and direct access redirected to 403; basic-auth switch location verified"
-  - level: ci
-    status: not_run
-    evidence: "PR CI will run backend/frontend checks and MySQL 5.7/8.0, PostgreSQL 9.6/16 registration-code administration regressions"
+- level: mock_unit
+  status: passed
+  evidence: go test ./controller ./service ./middleware ./model -count=1; go test -race ./controller ./service -run
+    '^TestRegistrationCode' -count=1; 52 affected frontend tests passed
+- level: typecheck
+  status: passed
+  evidence: bun run build:check (tsgo -b)
+- level: lint
+  status: passed
+  evidence: go vet ./controller ./service ./middleware ./model ./router; Oxlint 1.72.0 on changed TS/TSX files,
+    including project/intl-locale; protected-header formatting check passed
+- level: build
+  status: passed
+  evidence: go build; bun run build:check; real SQLite 3.50.4, MySQL 8.0.40 and PostgreSQL 16.15 tests; fresh startup
+    and rc.40.4 upgrade each migrated twice, preserving users/options and digest uniqueness
+- level: real_e2e
+  status: passed
+  evidence: 'Local browser with actual API, SQLite and Redis: root generated two codes without password; refresh
+    retained records; ordinary user had no sidebar entry and direct access redirected to 403; basic-auth switch
+    location verified'
+- level: ci
+  status: passed
+  evidence: 'PR #14: seven checks passed; MySQL 5.7/8.0, PostgreSQL 9.6/16, frontend, backend and governance. https://github.com/z71701/new-api/actions/runs/37917007509'
 blockers:
-  - "Pending PR review, merge authorization and post-merge handoff/image evidence"
-  - "Tag and production deployment require explicit human authorization"
+- Pending image build and immutable digest evidence; deployment consumes the final fixed-commit handoff.
