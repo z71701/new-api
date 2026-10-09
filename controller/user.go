@@ -272,7 +272,7 @@ func Register(c *gin.Context) {
 		return
 	}
 	var consumedRegistrationCode *service.ConsumedRegistrationCode
-	if common.RegistrationCodeEnabled {
+	if common.RegistrationCodeEnabled.Load() {
 		var ok bool
 		consumedRegistrationCode, ok = consumeRegistrationCode(c, user.RegistrationCode)
 		if !ok {

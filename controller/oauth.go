@@ -66,7 +66,7 @@ func GenerateOAuthCode(c *gin.Context) {
 	}
 	registrationCodeDigest := ""
 	if request.RegistrationCode != "" {
-		if !common.RegistrationCodeEnabled {
+		if !common.RegistrationCodeEnabled.Load() {
 			common.ApiErrorI18n(c, i18n.MsgInvalidParams)
 			return
 		}
@@ -550,7 +550,7 @@ func findOrCreateOAuthUser(c *gin.Context, provider oauth.Provider, oauthUser *o
 	}
 
 	var consumedRegistrationCode *service.ConsumedRegistrationCode
-	if common.RegistrationCodeEnabled {
+	if common.RegistrationCodeEnabled.Load() {
 		if registrationCodeDigest == "" {
 			common.ApiErrorI18n(c, i18n.MsgRegistrationCodeInvalid)
 			return nil, nil, service.ErrRegistrationCodeInvalid

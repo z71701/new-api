@@ -153,6 +153,12 @@ export function useSidebarData(): SidebarData {
             icon: Ticket,
           },
           {
+            title: t('Registration codes'),
+            url: '/registration-codes',
+            icon: Key,
+            requiredRole: ROLE.ADMIN,
+          },
+          {
             title: t('Subscriptions'),
             url: '/subscriptions',
             icon: CreditCard,

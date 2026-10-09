@@ -15,25 +15,26 @@ import (
 )
 
 const (
-	VerificationMethodTwoFA              = "2fa"
-	VerificationMethodPasskey            = "passkey"
-	VerificationMethodPassword           = "password"
-	VerificationMethodOAuth              = "oauth"
-	VerificationMethodSession            = "session"
-	VerificationScopeChannelKeyRead      = "channel.key.read"
-	VerificationScopePasskeyRegister     = "passkey.register"
-	VerificationScopePasskeyDelete       = "passkey.delete"
-	VerificationScopeTwoFASetup          = "2fa.setup"
-	VerificationScopeTwoFADisable        = "2fa.disable"
-	VerificationScopeTwoFABackupCodes    = "2fa.backup_codes.regenerate"
-	VerificationScopeLogin               = "auth.login"
-	VerificationScopeAccessTokenGenerate = "access_token.generate"
-	VerificationScopeAccessTokenRevoke   = "access_token.revoke"
-	VerificationScopeAccountBind         = "account.binding.bind"
-	VerificationScopeAccountUnbind       = "account.binding.unbind"
-	VerificationScopePasswordSet         = "account.password.set"
-	VerificationScopePasswordChange      = "account.password.change"
-	VerificationScopeAccountDelete       = "account.delete"
+	VerificationMethodTwoFA                   = "2fa"
+	VerificationMethodPasskey                 = "passkey"
+	VerificationMethodPassword                = "password"
+	VerificationMethodOAuth                   = "oauth"
+	VerificationMethodSession                 = "session"
+	VerificationScopeChannelKeyRead           = "channel.key.read"
+	VerificationScopeRegistrationCodeSettings = "registration_code.settings"
+	VerificationScopePasskeyRegister          = "passkey.register"
+	VerificationScopePasskeyDelete            = "passkey.delete"
+	VerificationScopeTwoFASetup               = "2fa.setup"
+	VerificationScopeTwoFADisable             = "2fa.disable"
+	VerificationScopeTwoFABackupCodes         = "2fa.backup_codes.regenerate"
+	VerificationScopeLogin                    = "auth.login"
+	VerificationScopeAccessTokenGenerate      = "access_token.generate"
+	VerificationScopeAccessTokenRevoke        = "access_token.revoke"
+	VerificationScopeAccountBind              = "account.binding.bind"
+	VerificationScopeAccountUnbind            = "account.binding.unbind"
+	VerificationScopePasswordSet              = "account.password.set"
+	VerificationScopePasswordChange           = "account.password.change"
+	VerificationScopeAccountDelete            = "account.delete"
 )
 
 var (
@@ -50,6 +51,10 @@ var (
 type VerificationOperation struct {
 	Scope   string          `json:"scope"`
 	Context json.RawMessage `json:"context,omitempty"`
+}
+
+type RegistrationCodeSettingsContext struct {
+	Enabled bool `json:"enabled"`
 }
 
 type ChannelKeyReadContext struct {
@@ -82,6 +87,12 @@ func BindVerificationOperation(operation VerificationOperation) (VerificationBin
 	}
 	var normalized any
 	switch operation.Scope {
+	case VerificationScopeRegistrationCodeSettings:
+		var enabled *bool
+		if len(fields) != 1 || common.Unmarshal(fields["enabled"], &enabled) != nil || enabled == nil {
+			return VerificationBinding{}, ErrVerificationContextInvalid
+		}
+		normalized = RegistrationCodeSettingsContext{Enabled: *enabled}
 	case VerificationScopeChannelKeyRead:
 		var context ChannelKeyReadContext
 		if len(fields) != 1 || common.Unmarshal(fields["channel_id"], &context.ChannelID) != nil || context.ChannelID <= 0 {
@@ -186,7 +197,8 @@ func securityVerificationPolicy(scope string, state model.UserVerificationState)
 	case VerificationScopePasskeyRegister, VerificationScopeTwoFASetup,
 		VerificationScopeAccessTokenGenerate, VerificationScopeAccessTokenRevoke,
 		VerificationScopeAccountBind, VerificationScopeAccountUnbind,
-		VerificationScopePasswordSet, VerificationScopePasswordChange, VerificationScopeAccountDelete:
+		VerificationScopePasswordSet, VerificationScopePasswordChange, VerificationScopeAccountDelete,
+		VerificationScopeRegistrationCodeSettings:
 		if scope == VerificationScopeAccountDelete && state.Role == common.RoleRootUser {
 			return nil, ErrVerificationForbidden
 		}
@@ -231,7 +243,7 @@ func GetVerificationRequirements(identity AuthIdentity, scope string) (*Verifica
 	if state.Status != common.UserStatusEnabled || state.AuthVersion != identity.UserAuthVersion {
 		return nil, ErrAuthTokenInvalid
 	}
-	if scope == VerificationScopeChannelKeyRead && state.Role != common.RoleRootUser {
+	if (scope == VerificationScopeChannelKeyRead || scope == VerificationScopeRegistrationCodeSettings) && state.Role != common.RoleRootUser {
 		return nil, ErrVerificationForbidden
 	}
 	methods, err := securityVerificationPolicy(scope, *state)
@@ -242,7 +254,7 @@ func GetVerificationRequirements(identity AuthIdentity, scope string) (*Verifica
 	for i := range methods {
 		if methods[i].Method == VerificationMethodPassword && !common.PasswordLoginEnabled {
 			switch scope {
-			case VerificationScopeAccountBind, VerificationScopeAccountUnbind, VerificationScopePasswordSet, VerificationScopePasswordChange, VerificationScopeAccountDelete:
+			case VerificationScopeAccountBind, VerificationScopeAccountUnbind, VerificationScopePasswordSet, VerificationScopePasswordChange, VerificationScopeAccountDelete, VerificationScopeRegistrationCodeSettings:
 				methods[i].Available, methods[i].Reason = false, "Password authentication is disabled."
 			}
 		}

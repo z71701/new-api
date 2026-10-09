@@ -95,7 +95,7 @@ func WeChatAuth(c *gin.Context) {
 	} else {
 		if common.RegisterEnabled {
 			var consumedRegistrationCode *service.ConsumedRegistrationCode
-			if common.RegistrationCodeEnabled {
+			if common.RegistrationCodeEnabled.Load() {
 				var ok bool
 				consumedRegistrationCode, ok = consumeRegistrationCode(c, registrationCode)
 				if !ok {

@@ -11,7 +11,7 @@ import (
 
 func RegistrationCodeAPIAuth() gin.HandlerFunc {
 	return func(c *gin.Context) {
-		if !common.RegistrationCodeEnabled || common.RegistrationCodeAPIKey == "" {
+		if !common.RegistrationCodeEnabled.Load() || common.RegistrationCodeAPIKey == "" {
 			c.AbortWithStatusJSON(http.StatusNotFound, gin.H{"success": false, "message": "not found"})
 			return
 		}

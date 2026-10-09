@@ -74,6 +74,35 @@ function sidebarFor(admin?: object, user?: object, canConfigure = true) {
 }
 
 describe('security sidebar visibility', () => {
+  it('shows Registration codes between Redemption Codes and Subscriptions for legacy sidebar settings', () => {
+    const { result } = sidebarFor({
+      admin: { enabled: true, redemption: true, subscription: true },
+    })
+    const items =
+      result.current.find((group) => group.id === 'admin')?.items ?? []
+    const titles = items.map((item) => item.title)
+    const redemption = titles.indexOf('Redemption Codes')
+    expect(titles.slice(redemption, redemption + 3)).toEqual([
+      'Redemption Codes',
+      'Registration codes',
+      'Subscriptions',
+    ])
+    expect(
+      items.find((item) => item.title === 'Registration codes')
+    ).toMatchObject({ url: '/registration-codes', requiredRole: 10 })
+  })
+
+  it('honors the administrator visibility toggle for Registration codes', () => {
+    const { result } = sidebarFor({
+      admin: { enabled: true, registration: false },
+    })
+    expect(
+      result.current
+        .flatMap((group) => group.items)
+        .some((item) => item.title === 'Registration codes')
+    ).toBe(false)
+  })
+
   it('old configurations show Security & Access immediately after Profile and keep API Keys', () => {
     const { result } = sidebarFor(
       { personal: { enabled: true, personal: true, topup: true } },

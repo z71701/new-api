@@ -190,6 +190,10 @@ func UpdateOption(c *gin.Context) {
 		})
 		return
 	}
+	if option.Key == "RegistrationCodeEnabled" {
+		c.JSON(http.StatusBadRequest, gin.H{"success": false, "message": "Use the registration code settings endpoint."})
+		return
+	}
 	switch option.Value.(type) {
 	case bool:
 		option.Value = common.Interface2String(option.Value.(bool))
