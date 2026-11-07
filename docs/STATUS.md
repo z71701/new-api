@@ -1,10 +1,12 @@
 # ALIAI — z71701/new-api 状态（本仓权威入口）
-<!-- status-sync: state=released source_commit=66bb4f12b5517896d53304ce7bb8e784ddad5092 updated_at=2026-10-09T12:28:31Z -->
+<!-- status-sync: state=candidate source_commit=0d4312dc9620d182a291689ca1e289ff47255d1f updated_at=2026-11-07T16:49:34Z -->
 
-> 本文件是本仓库（backend）唯一现状入口，只记录本仓权威事实。其他仓库的状态以**固定 commit URL** 引用，不声明为动态事实。机器权威快照见 `docs/status.yml`（schema v1.1）。最后更新：2026-10-09。
+> 本文件是本仓库（backend）唯一现状入口，只记录本仓权威事实。其他仓库的状态以**固定 commit URL** 引用，不声明为动态事实。机器权威快照见 `docs/status.yml`（schema v1.1）。最后更新：2026-11-07。
 
 ## 当前阶段
-`registration-code-admin` 已合入并发布，生命周期 **implemented → verified → released**。Tag `aliai/v1.0.0-rc.40.5` 固定在 PR #14 的真实合并提交；linux/amd64 镜像构建与源码测试通过，镜像引用为 `ghcr.io/z71701/new-api@sha256:652e2bfea7ba6c34d5c534282bb38e7ce921c7e5cef9bedda2e52d7159965cb8`。该记录只声明后端镜像发布事实，生产发布记录由部署仓维护。
+`upstream-sync-rc48` 为功能候选（**planned → candidate**），待 PR 评审与合并：把上游 `QuantumNous/new-api` tag `v1.0.0-rc.48`（[`706144769`](https://github.com/QuantumNous/new-api/commit/706144769e5bed5a47b78721e3bb11da3cf4c0b9)，含 rc.46 安全修复与 Go 1.26.10）合入 `aliai/v1.0.0-rc.40.5`。实现提交为合并提交 `0d4312dc9620d182a291689ca1e289ff47255d1f`；尚无镜像，已发布基线仍为下述 rc.40.5。
+
+已发布基线：`registration-code-admin` 已合入并发布，生命周期 **implemented → verified → released**。Tag `aliai/v1.0.0-rc.40.5` 固定在 PR #14 的真实合并提交；linux/amd64 镜像构建与源码测试通过，镜像引用为 `ghcr.io/z71701/new-api@sha256:652e2bfea7ba6c34d5c534282bb38e7ce921c7e5cef9bedda2e52d7159965cb8`。该记录只声明后端镜像发布事实，生产发布记录由部署仓维护。
 
 ## 本仓权威事实
 <!-- backend = API/OpenAPI/错误码/runtime switches/fixtures/后端状态 -->
@@ -18,6 +20,7 @@
 - 契约文件（随提交固定）：`docs/desktop-auth-openapi.yaml`（OpenAPI 3.1.0）、`docs/desktop-auth-acceptance-checklist.md`、`docs/desktop-auth-owasp-controls.md`、`docs/desktop-turnstile-integration.md`。
 
 ## 版本与提交
+- 上游同步候选：分支 `claude/upstream-sync-rc48-8991b8`，合并提交 `0d4312dc9620d182a291689ca1e289ff47255d1f`（父提交 `d300ca6dd` 与上游 `706144769`）。本地 Go 1.26.10 build/vet/测试、前端类型检查/测试/构建、SQLite 从 rc.40.5 升级（启动两次）通过；MySQL/PostgreSQL 由 PR CI 验证。
 - 功能分支：`codex/registration-code-admin`。
 - 实际合并提交：[PR #14 固定提交](https://github.com/z71701/new-api/commit/66bb4f12b5517896d53304ce7bb8e784ddad5092)；Tag `aliai/v1.0.0-rc.40.5` 指向同一提交。
 - 基础功能：[PR #12 合并提交](https://github.com/z71701/new-api/commit/1b51fc3e9ac2acb8e6dbb943780ac451d2c81619)。
@@ -44,6 +47,7 @@
 | #8 | desktop E2E acceptance contract | `c1876ec91a814673ec30316da741fb6efa428ebe` |
 
 ## 开放项 / Blockers
+- 上游同步候选：合并后控制台接口错误改为英文 `message` + `message_key`（上游 rc.43 约定），桌面客户端需按 `code` / `message_key` 本地化；上线需设置 `DEFAULT_LANGUAGE=zh-CN` 并多节点同时升级（rc.48 鉴权缓存签名）。
 - PR #14 七项 CI 全部通过，用户已明确授权本次合并、Tag 与部署。
 - 独立 post-merge PR #15 已合入；本独立发布更新记录实际 digest，部署仓通过固定 URL 消费并维护其生产与回滚证据。
 - 发版时备份数据库及现有独立密钥，保留共享 Redis。回滚到 rc.40.4 时须核对环境开关，因为该版本尚不消费数据库 `RegistrationCodeEnabled` option。

@@ -3,43 +3,34 @@ repo:
   name: z71701/new-api
   role: backend
 lifecycle:
-  current_state: released
-  previous_state: verified
-  updated_at: '2026-10-09T12:28:31Z'
-  source_commit: 66bb4f12b5517896d53304ce7bb8e784ddad5092
-  evidence: 'PR #14 merge 66bb4f12b5517896d53304ce7bb8e784ddad5092 tagged as aliai/v1.0.0-rc.40.5; source validation
-    and linux/amd64 image publication passed. Image-reference artifact and GHCR manifest independently match sha256:652e2bfea7ba6c34d5c534282bb38e7ce921c7e5cef9bedda2e52d7159965cb8.
-    https://github.com/z71701/new-api/actions/runs/37928869622'
+  current_state: candidate
+  previous_state: planned
+  updated_at: '2026-11-07T16:49:34Z'
+  source_commit: 0d4312dc9620d182a291689ca1e289ff47255d1f
+  evidence: 'New upstream-sync-rc48 artifact: merge of upstream tag v1.0.0-rc.48 (706144769) into aliai/v1.0.0-rc.40.5
+    (d300ca6dd), keeping desktop sessions, token idempotency/masking and registration codes. Local Go/frontend checks
+    and a SQLite upgrade passed; MySQL/PostgreSQL pending CI. Pending PR review and merge. The released baseline remains
+    aliai/v1.0.0-rc.40.5 (66bb4f12b5517896d53304ce7bb8e784ddad5092).'
 artifact:
-  name: registration-code-admin
-  version: aliai/v1.0.0-rc.40.5
+  name: upstream-sync-rc48
+  version: candidate
 tests:
 - level: mock_unit
   status: passed
-  evidence: go test ./controller ./service ./middleware ./model -count=1; go test -race ./controller ./service -run
-    '^TestRegistrationCode' -count=1; 52 affected frontend tests passed
+  evidence: go test ./controller ./middleware ./model ./service ./router ./common ./i18n -count=1; relaykit and tokenkit
+    go test ./...; vitest 204 files / 2477 tests. relay/channel/advancedcustom TestAdaptorMasksDialedHostsInDialFailure
+    fails locally on upstream rc.48 as well (local network environment)
 - level: typecheck
   status: passed
-  evidence: bun run build:check (tsgo -b)
+  evidence: bun check -b (1,418 files)
 - level: lint
   status: passed
-  evidence: go vet ./controller ./service ./middleware ./model ./router; Oxlint 1.72.0 on changed TS/TSX files,
-    including project/intl-locale; protected-header formatting check passed
+  evidence: go vet ./... for root, relaykit and tokenkit; go mod tidy -diff clean; gofmt and oxfmt on changed files
 - level: build
   status: passed
-  evidence: go build; bun run build:check; real SQLite 3.50.4, MySQL 8.0.40 and PostgreSQL 16.15 tests; fresh startup
-    and rc.40.4 upgrade each migrated twice, preserving users/options and digest uniqueness
-- level: real_e2e
-  status: passed
-  evidence: 'Local browser with actual API, SQLite and Redis: root generated two codes without password; refresh
-    retained records; ordinary user had no sidebar entry and direct access redirected to 403; basic-auth switch
-    location verified'
+  evidence: go build for root, relaykit and tokenkit with Go 1.26.10; bun run build; SQLite upgrade from rc.40.5 started
+    twice with users, tokens, desktop session, idempotency and registration code records preserved and identical schema
 - level: ci
-  status: passed
-  evidence: 'PR #14: seven checks passed; MySQL 5.7/8.0, PostgreSQL 9.6/16, frontend, backend and governance. https://github.com/z71701/new-api/actions/runs/37917007509'
+  status: not_run
+  evidence: PR CI (backend, frontend, MySQL 5.7/8.0, PostgreSQL 9.6/16, governance) not yet run
 blockers: []
-backend:
-  image_tag: aliai/v1.0.0-rc.40.5
-  image_digest: sha256:652e2bfea7ba6c34d5c534282bb38e7ce921c7e5cef9bedda2e52d7159965cb8
-  image_ref: ghcr.io/z71701/new-api@sha256:652e2bfea7ba6c34d5c534282bb38e7ce921c7e5cef9bedda2e52d7159965cb8
-  image_evidence: https://github.com/z71701/new-api/actions/runs/37928869622
