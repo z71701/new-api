@@ -10,7 +10,6 @@ import (
 	"unicode/utf8"
 
 	"github.com/QuantumNous/new-api/common"
-	"github.com/QuantumNous/new-api/i18n"
 	"github.com/QuantumNous/new-api/middleware"
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/service"
@@ -32,18 +31,18 @@ type registrationCodeListItem struct {
 func ListRegistrationCodes(c *gin.Context) {
 	page, err := strconv.Atoi(c.DefaultQuery("p", "1"))
 	if err != nil || page < 1 || page > 1000000 {
-		common.ApiErrorI18n(c, i18n.MsgInvalidParams)
+		common.ApiErrorT(c, "Invalid parameters")
 		return
 	}
 	size, err := strconv.Atoi(c.DefaultQuery("page_size", "20"))
 	keyword := strings.TrimSpace(c.Query("keyword"))
 	if err != nil || size < 1 || size > 100 || utf8.RuneCountInString(keyword) > 64 {
-		common.ApiErrorI18n(c, i18n.MsgInvalidParams)
+		common.ApiErrorT(c, "Invalid parameters")
 		return
 	}
 	records, total, err := model.GetRegistrationCodeRecords(page, size, keyword)
 	if err != nil {
-		common.ApiErrorI18n(c, i18n.MsgDatabaseError)
+		common.ApiErrorT(c, "Database error, please contact the administrator")
 		return
 	}
 	items := make([]registrationCodeListItem, 0, len(records))
@@ -84,7 +83,7 @@ func UpdateRegistrationCodeSettings(c *gin.Context) {
 		Enabled *bool `json:"enabled"`
 	}
 	if err := common.DecodeJson(c.Request.Body, &request); err != nil || request.Enabled == nil {
-		common.ApiErrorI18n(c, i18n.MsgInvalidParams)
+		common.ApiErrorT(c, "Invalid parameters")
 		return
 	}
 	params["enabled"] = *request.Enabled
@@ -102,12 +101,12 @@ func UpdateRegistrationCodeSettings(c *gin.Context) {
 			return
 		}
 		if err := common.RDB.Ping(c.Request.Context()).Err(); err != nil {
-			common.ApiErrorI18n(c, i18n.MsgRegistrationCodeUnavailable)
+			common.ApiErrorT(c, "Registration code service is unavailable")
 			return
 		}
 	}
 	if err := model.UpdateOptionsBulk(map[string]string{"RegistrationCodeEnabled": strconv.FormatBool(*request.Enabled)}); err != nil {
-		common.ApiErrorI18n(c, i18n.MsgDatabaseError)
+		common.ApiErrorT(c, "Database error, please contact the administrator")
 		return
 	}
 	params["success"] = true
@@ -178,7 +177,7 @@ func generateRegistrationCodes(c *gin.Context, dashboard bool) {
 			records = append(records, model.RegistrationCodeRecord{Name: request.Name, Digest: digest, Ciphertext: encrypted, CreatedTime: createdAt, ExpiredTime: createdAt + int64(request.TTLSeconds), CreatedBy: c.GetInt("id")})
 		}
 		if err := model.SaveRegistrationCodeRecords(records); err != nil {
-			common.ApiErrorI18n(c, i18n.MsgDatabaseError)
+			common.ApiErrorT(c, "Database error, please contact the administrator")
 			return
 		}
 		published = true
@@ -202,11 +201,11 @@ func consumeRegistrationCode(c *gin.Context, code string) (*service.ConsumedRegi
 		return consumed, true
 	}
 	if errors.Is(err, service.ErrRegistrationCodeInvalid) {
-		common.ApiErrorI18n(c, i18n.MsgRegistrationCodeInvalid)
+		common.ApiErrorT(c, "Registration code is invalid, expired, or already used")
 		return nil, false
 	}
 	common.SysError("registration code consumption failed: " + err.Error())
-	common.ApiErrorI18n(c, i18n.MsgRegistrationCodeUnavailable)
+	common.ApiErrorT(c, "Registration code service is unavailable")
 	return nil, false
 }
 
@@ -216,11 +215,11 @@ func consumeRegistrationCodeDigest(c *gin.Context, digest string) (*service.Cons
 		return consumed, true
 	}
 	if errors.Is(err, service.ErrRegistrationCodeInvalid) {
-		common.ApiErrorI18n(c, i18n.MsgRegistrationCodeInvalid)
+		common.ApiErrorT(c, "Registration code is invalid, expired, or already used")
 		return nil, false
 	}
 	common.SysError("registration code consumption failed: " + err.Error())
-	common.ApiErrorI18n(c, i18n.MsgRegistrationCodeUnavailable)
+	common.ApiErrorT(c, "Registration code service is unavailable")
 	return nil, false
 }
 

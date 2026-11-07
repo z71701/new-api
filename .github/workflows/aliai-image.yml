@@ -36,12 +36,14 @@ jobs:
           cache-dependency-path: |
             go.sum
             relaykit/go.sum
+            tokenkit/go.sum
       - name: Prepare embedded frontend placeholder
         run: mkdir -p web/dist && touch web/dist/index.html
       - name: Vet and test
         run: |
           go vet ./...
           (cd relaykit && go vet ./...)
+          (cd tokenkit && go vet ./...)
           make test
 
   image:

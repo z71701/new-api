@@ -82,7 +82,7 @@ beforeEach(async () => {
       data:
         url === '/api/verify/methods'
           ? {
-              scope: options?.params?.scope,
+              scope: (options?.params as { scope?: string } | undefined)?.scope,
               methods: [{ method: 'password', available: true }],
               oauth_providers: [],
               password_encryption_enabled: false,
