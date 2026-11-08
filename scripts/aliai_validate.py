@@ -17,8 +17,9 @@ Validates (v1.0 preserved + v1.1 status lifecycle):
     9. With --base/--head: git diff base...head; if trigger_paths are touched,
        docs/status.yml AND docs/STATUS.md must both be in the diff.
    10. Lifecycle transition previous_state->current_state is legal.
-   11. candidate state: source_commit must not be a merge commit; merge-only fields
-       (backend.image_digest, deploy.actual_digest, ...) must be absent.
+   11. candidate state: merge-only fields (backend.image_digest, deploy.actual_digest, ...)
+       must be absent. source_commit may be any branch commit, including a merge commit
+       (an upstream sync is one).
    12. implemented state: source_commit must be a 40-hex SHA.
    13. Role evidence gates: released->image_tag+image_digest(sha256:);
        accepted->test_level=real_e2e+evidence; deployed->four-piece non-empty.
@@ -110,14 +111,6 @@ def is_40hex(s: str) -> bool:
 def commit_object_exists(root: Path, sha: str) -> bool:
     r = git(root, "cat-file", "-t", sha)
     return r.returncode == 0 and "commit" in r.stdout
-
-
-def is_merge_commit(root: Path, sha: str) -> bool:
-    r = git(root, "rev-list", "--parents", "-n1", sha)
-    if r.returncode != 0:
-        return False
-    parts = r.stdout.split()
-    return len(parts) >= 3  # <sha> <parent1> <parent2>...
 
 
 def get_nested(data: dict, dotted: str):
@@ -232,14 +225,8 @@ def validate_status_yml(root: Path, gov: dict, errors: list[str], warnings: list
     if cur in ("implemented", "verified", "accepted", "released", "deployed"):
         if not is_40hex(src):
             fail(errors, f"docs/status.yml: source_commit must be 40-hex SHA in state={cur}, got {src!r}")
-    # candidate: source_commit must not be a merge commit, and merge-only fields absent
+    # candidate: merge-only fields absent
     if cur == "candidate":
-        if is_40hex(src) and not offline:
-            try:
-                if is_merge_commit(root, src):
-                    fail(errors, f"docs/status.yml: candidate source_commit {src[:12]} is a merge commit")
-            except Exception:
-                pass
         for mf in MERGE_ONLY_FIELDS:
             v = get_nested(data, mf)
             if v not in (None, ""):

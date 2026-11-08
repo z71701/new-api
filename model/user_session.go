@@ -100,6 +100,8 @@ type userSessionCacheEntry struct {
 	RevokedAt       int64
 	RevokedReason   string
 	CacheSchema     int
+	CacheExpiresAt  int64
+	CacheMAC        string `json:"-"`
 }
 
 func (session *UserSession) cacheEntry() *userSessionCacheEntry {
@@ -205,7 +207,7 @@ func publishCreatedUserSession(session *UserSession, cacheDeadline time.Time) er
 		if errors.Is(err, ErrUserSessionInactive) {
 			return err
 		}
-		common.SysLog("failed to populate newly created user session cache: " + err.Error())
+		common.SysLog(common.LogText("failed to populate newly created user session cache: %s", err.Error()))
 	}
 	return nil
 }
@@ -291,7 +293,7 @@ func GetUserSessionCached(sid string) (*UserSession, error) {
 			if errors.Is(err, ErrUserSessionInactive) {
 				return nil, err
 			}
-			common.SysLog("failed to synchronously populate user session cache: " + err.Error())
+			common.SysLog(common.LogText("failed to synchronously populate user session cache: %s", err.Error()))
 		}
 	}
 	return session, nil
@@ -304,6 +306,10 @@ func getUserSessionCache(sid string) (*userSessionCacheEntry, error) {
 	}
 	if entry.CacheSchema != userSessionCacheSchema || entry.SID != sid || entry.UserID <= 0 || entry.Version <= 0 || entry.UserAuthVersion <= 0 {
 		return nil, fmt.Errorf("user session cache schema is stale")
+	}
+	mac, err := authCacheMAC(userSessionCacheKey(sid), entry)
+	if err != nil || !validAuthCacheMAC(mac, entry.CacheMAC, entry.CacheExpiresAt) {
+		return nil, fmt.Errorf("user session cache integrity check failed")
 	}
 	if entry.Status != UserSessionStatusActive || entry.RevokedAt != 0 || entry.ExpiresAt <= time.Now().Unix() {
 		return nil, ErrUserSessionInactive
@@ -344,6 +350,7 @@ func writeUserSessionCache(entry *userSessionCacheEntry, cacheDeadline time.Time
 			return errUserSessionCacheObservationStale
 		}
 		redisExpiration = cacheExpiresAt.UnixMilli()
+		entry.CacheExpiresAt = redisExpiration
 	} else {
 		ttl := min(sessionTTL, time.Duration(userCacheTTLSeconds())*time.Second)
 		if ttl <= 0 {
@@ -353,8 +360,13 @@ func writeUserSessionCache(entry *userSessionCacheEntry, cacheDeadline time.Time
 		if redisExpiration <= 0 {
 			redisExpiration = 1
 		}
+		entry.CacheExpiresAt = now.UnixMilli() + redisExpiration
 	}
 	entry.CacheSchema = userSessionCacheSchema
+	mac, err := authCacheMAC(userSessionCacheKey(entry.SID), entry)
+	if err != nil {
+		return err
+	}
 	const script = `
 local current_status = redis.call('HGET', KEYS[1], 'Status')
 local current_version = tonumber(redis.call('HGET', KEYS[1], 'Version') or '0')
@@ -371,7 +383,8 @@ redis.call('HSET', KEYS[1],
   'DeviceID', ARGV[10], 'DeviceName', ARGV[11], 'Platform', ARGV[12],
   'Arch', ARGV[13], 'ClientVersion', ARGV[14], 'CreatedAt', ARGV[15],
   'LastActiveAt', ARGV[16], 'ExpiresAt', ARGV[17], 'RevokedAt', ARGV[18],
-  'RevokedReason', ARGV[19], 'CacheSchema', ARGV[20])
+  'RevokedReason', ARGV[19], 'CacheSchema', ARGV[20],
+  'CacheExpiresAt', ARGV[22], 'CacheMAC', ARGV[23])
 if ARGV[5] == 'active' then
   redis.call('PEXPIREAT', KEYS[1], ARGV[21])
 else
@@ -383,7 +396,7 @@ return 1`
 		entry.LoginMethod, entry.ClientType, entry.IP, entry.UserAgent, entry.DeviceID,
 		entry.DeviceName, entry.Platform, entry.Arch, entry.ClientVersion, entry.CreatedAt,
 		entry.LastActiveAt, entry.ExpiresAt, entry.RevokedAt, entry.RevokedReason, entry.CacheSchema,
-		redisExpiration,
+		redisExpiration, entry.CacheExpiresAt, mac,
 	).Int()
 	if err != nil {
 		return err
@@ -545,7 +558,7 @@ func RotateUserSessionRefresh(userID int, sid, presentedHash, nextHash string, n
 				} else if errors.Is(err, ErrUserSessionInactive) {
 					return nil, err
 				} else {
-					common.SysLog("failed to update rotated user session cache: " + err.Error())
+					common.SysLog(common.LogText("failed to update rotated user session cache: %s", err.Error()))
 				}
 			}
 			return &session, nil
@@ -582,7 +595,7 @@ func RotateUserSessionRefresh(userID int, sid, presentedHash, nextHash string, n
 		session.RevokedAt = now
 		session.RevokedReason = "refresh_reuse"
 		if err := writeUserSessionCache(session.cacheEntry(), time.Time{}); err != nil {
-			common.SysLog("failed to cache refresh-reuse session revoke: " + err.Error())
+			common.SysLog(common.LogText("failed to cache refresh-reuse session revoke: %s", err.Error()))
 		}
 		return nil, ErrUserSessionRefreshReuse
 	}
@@ -636,7 +649,7 @@ func RevokeUserSession(userID int, sid, reason string) (bool, error) {
 		candidate.RevokedAt = now
 		candidate.RevokedReason = reason
 		if err := writeUserSessionCache(candidate.cacheEntry(), time.Time{}); err != nil {
-			common.SysLog("failed to finalize user session revoke tombstone: " + err.Error())
+			common.SysLog(common.LogText("failed to finalize user session revoke tombstone: %s", err.Error()))
 		}
 	}
 	return revoked, nil
@@ -692,7 +705,7 @@ func RevokeUserSessionByRefreshHash(sid, presentedHash, reason string) (bool, er
 	}
 	if revoked {
 		if err := writeUserSessionCache(session.cacheEntry(), time.Time{}); err != nil {
-			common.SysLog("failed to finalize refresh-authenticated session revoke tombstone: " + err.Error())
+			common.SysLog(common.LogText("failed to finalize refresh-authenticated session revoke tombstone: %s", err.Error()))
 		}
 	}
 	return revoked, nil
@@ -815,7 +828,7 @@ func revokeUserSessions(userID int, excludedSID, reason string) (int64, error) {
 			revoked[i].RevokedAt = now
 			revoked[i].RevokedReason = reason
 			if err := writeUserSessionCache(revoked[i].cacheEntry(), time.Time{}); err != nil {
-				common.SysLog("failed to finalize bulk user session revoke tombstone: " + err.Error())
+				common.SysLog(common.LogText("failed to finalize bulk user session revoke tombstone: %s", err.Error()))
 			}
 		}
 	}
